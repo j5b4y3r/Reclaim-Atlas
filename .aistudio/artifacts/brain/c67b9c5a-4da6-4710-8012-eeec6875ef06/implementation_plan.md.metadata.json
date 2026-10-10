@@ -1,0 +1,6 @@
+{
+  "summary":  "Architectural and technical plan for the 4th Layer On-Device AI Modesty & Awrah Scanner. Details open-source vision models (NudeNet YOLOv8-Lite / MobileNet TFLite), Islamic modesty sources (HaramBlur / Ghadd al-Basar principles), battery-optimized 3 FPS media-triggered sampling, and system architecture.",
+  "updatedAt":  "2026-10-10T03:40:39.311334685Z",
+  "requestFeedback":  true,
+  "userFacing":  true
+}

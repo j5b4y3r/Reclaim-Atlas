@@ -1,0 +1,8 @@
+{
+  "name": "Reclaim",
+  "description": "Take control of your life. Mindful digital self-control, content blocking, habit tracking, and focus. for personal use only.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
