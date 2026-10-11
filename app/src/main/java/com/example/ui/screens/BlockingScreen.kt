@@ -57,7 +57,6 @@ import androidx.compose.ui.unit.sp
 import com.example.domain.engine.LockedActionTarget
 import com.example.ui.components.EmailAlreadySentBadge
 import com.example.ui.components.InfoHelpIconButton
-import com.example.ui.components.ModestyGuardConfigBottomSheet
 import com.example.ui.components.UninstallProtectionConfigBottomSheet
 import com.example.ui.components.UninstallProtectionDeviceAdminDialog
 import com.example.ui.theme.AppBackground
@@ -92,13 +91,6 @@ fun BlockingScreen(
     val currentLiveTimeMs by viewModel.currentLiveTimeMs.collectAsState()
     val newAppsBlocked by viewModel.newAppsBlocked.collectAsState()
     val unsupportedBrowsersBlocked by viewModel.unsupportedBrowsersBlocked.collectAsState()
-    val aiModestyGuardEnabled by viewModel.aiModestyGuardEnabled.collectAsState()
-    val aiModestyScanFps by viewModel.aiModestyScanFps.collectAsState()
-    val aiModestyShieldStyle by viewModel.aiModestyShieldStyle.collectAsState()
-    val aiModestyBlurIntensity by viewModel.aiModestyBlurIntensity.collectAsState()
-    val aiModestySensitivity by viewModel.aiModestySensitivity.collectAsState()
-    var showModestyGuardConfigSheet by remember { mutableStateOf(false) }
-
     val accountabilityEnabled by viewModel.accountabilityEnabled.collectAsState()
     val partnerEmail by viewModel.accountabilityPartnerEmail.collectAsState()
     val partnerName by viewModel.accountabilityPartnerName.collectAsState()
@@ -107,29 +99,23 @@ fun BlockingScreen(
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
     var isDeviceAdminActive by remember { mutableStateOf(PermissionHelper.isDeviceAdminActive(context)) }
+    var isAccessibilityGranted by remember { mutableStateOf(PermissionHelper.isAccessibilityEnabled(context)) }
     var showDeviceAdminPopup by remember { mutableStateOf(false) }
     var showUninstallConfigSheet by remember { mutableStateOf(false) }
     var pendingAdminDays by remember { mutableIntStateOf(1) }
     var waitingForAdminGrant by remember { mutableStateOf(false) }
 
-    // If Uninstall Protection was unlocked via Partner 6-digit code or timer expiry, remove Device Admin
-    LaunchedEffect(uninstallProtection) {
-        if (!uninstallProtection && PermissionHelper.isDeviceAdminActive(context)) {
-            PermissionHelper.removeDeviceAdmin(context)
-            isDeviceAdminActive = PermissionHelper.isDeviceAdminActive(context)
-        }
-    }
+
 
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
             if (event == Lifecycle.Event.ON_RESUME) {
+                isAccessibilityGranted = PermissionHelper.isAccessibilityEnabled(context)
                 val active = PermissionHelper.isDeviceAdminActive(context)
                 isDeviceAdminActive = active
                 if (active && waitingForAdminGrant) {
                     waitingForAdminGrant = false
                     showUninstallConfigSheet = true
-                } else if (!active && uninstallProtection) {
-                    viewModel.setUninstallProtection(false)
                 }
             }
         }
@@ -409,8 +395,7 @@ fun BlockingScreen(
                 stepsOrBullets = listOf(
                     "Prevent Uninstall: Locks Reclaim against uninstallation and accessibility tampering for your chosen number of days (auto-unblocks when timer finishes).",
                     "Block New App Installs: Automatically blocks any newly installed apps downloaded after enabling.",
-                    "Block Unsupported Browsers: Blocks browsers that do not expose URL bars to accessibility filters.",
-                    "AI Modesty Guard: 4th layer on-device vision AI scanning reels and images across all apps, concealing revealing models with targeted blur or blackout shields."
+                    "Block Unsupported Browsers: Blocks browsers that do not expose URL bars to accessibility filters."
                 )
             )
         }
@@ -504,55 +489,10 @@ fun BlockingScreen(
                     }
                 )
 
-                val modestyDesc = if (aiModestyGuardEnabled) {
-                    val styleLabel = when (aiModestyShieldStyle) {
-                        "BLACK_OVERLAY" -> "Blackout Shield"
-                        "FULL_SCREEN" -> "Full Screen Barrier"
-                        else -> "Targeted Blur ($aiModestyBlurIntensity%)"
-                    }
-                    "Active • $aiModestyScanFps FPS media scan • $styleLabel"
-                } else {
-                    "On-device AI scanning reels & images for revealing content"
-                }
-
-                AdvancedToggleItem(
-                    title = "AI Modesty Guard (On-Device)",
-                    description = modestyDesc,
-                    checked = aiModestyGuardEnabled,
-                    hasPendingEmailCode = activePartnerRequests.containsKey("ADV_AI_MODESTY_GUARD"),
-                    onOpenPendingCode = {
-                        viewModel.triggerLockedItemDialog(
-                            LockedActionTarget("ADV_AI_MODESTY_GUARD", "Turn Off 'AI Modesty Guard'")
-                        )
-                    },
-                    onCheckedChange = { willEnable ->
-                        if (willEnable) {
-                            showModestyGuardConfigSheet = true
-                        } else {
-                            viewModel.setAiModestyGuardEnabled(false)
-                        }
-                    }
-                )
             }
         }
 
         Spacer(modifier = Modifier.height(24.dp))
-    }
-
-    if (showModestyGuardConfigSheet) {
-        ModestyGuardConfigBottomSheet(
-            initialScanFps = aiModestyScanFps,
-            initialShieldStyle = aiModestyShieldStyle,
-            initialBlurIntensity = aiModestyBlurIntensity,
-            initialSensitivity = aiModestySensitivity,
-            onConfirm = { fps, style, blur, sens ->
-                showModestyGuardConfigSheet = false
-                viewModel.activateAiModestyGuard(fps, style, blur, sens)
-            },
-            onDismiss = {
-                showModestyGuardConfigSheet = false
-            }
-        )
     }
 
     if (showUninstallConfigSheet) {

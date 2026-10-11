@@ -1058,8 +1058,8 @@ object RuleEngine {
         isAccountabilityLocked: Boolean = false,
         isAccountabilityEnabled: Boolean = false
     ): EvaluationResult {
-        val canEnforceUninstall = isUninstallProtectionEnabled
-        val canEnforceTamper = isUninstallProtectionEnabled || isAccountabilityLocked
+        val canEnforceUninstall = isUninstallProtectionEnabled || isDeviceAdminActive
+        val canEnforceTamper = isUninstallProtectionEnabled || isAccountabilityLocked || isAccountabilityEnabled || isDeviceAdminActive
 
         if (!canEnforceUninstall && !canEnforceTamper) {
             return EvaluationResult(isBlocked = false)
@@ -1115,7 +1115,15 @@ object RuleEngine {
                 packageName.contains("securitycenter", ignoreCase = true) ||
                 packageName.contains("deviceadmin", ignoreCase = true) ||
                 packageName.contains("devicepolicy", ignoreCase = true) ||
-                packageName.contains("safecenter", ignoreCase = true)
+                packageName.contains("safecenter", ignoreCase = true) ||
+                packageName.contains("knox", ignoreCase = true) ||
+                packageName.contains("security", ignoreCase = true) ||
+                packageName.contains("admin", ignoreCase = true) ||
+                packageName.contains("policy", ignoreCase = true) ||
+                packageName.contains("file", ignoreCase = true) ||
+                packageName.contains("myfiles", ignoreCase = true) ||
+                packageName.contains("documentsui", ignoreCase = true) ||
+                packageName.contains("explorer", ignoreCase = true)
         if (!isSettingsOrAccPkg) {
             return EvaluationResult(isBlocked = false)
         }
@@ -1136,52 +1144,20 @@ object RuleEngine {
                 combined.contains("blocking distracting content") ||
                 combined.contains("reclaim_accessibility_detail_page")
 
-        // 1. Explicit deactivation keywords / actions targeting Device Admin (ONLY when Device Admin is already active!)
-        val isExplicitDeactivate = isDeviceAdminActive && (
-                combined.contains("deactivate this device admin") ||
-                combined.contains("deactivate device admin") ||
-                combined.contains("deactivate device admin app") ||
-                combined.contains("deactivate this device admin app") ||
-                combined.contains("deactivate this admin app") ||
-                combined.contains("remove device admin") ||
-                combined.contains("deactivate this app") ||
-                (combined.contains("deactivate") && (combined.contains("admin") || isTargetingReclaim)) ||
-                viewId.contains("deactivate") ||
-                (isTargetingReclaim && (combined.contains("device admin") || combined.contains("device administrator") || viewId.contains("device_admin")) && (combined.contains("deactivate") || combined.contains("remove") || combined.contains("turn off") || combined.contains("uninstall")))
-        )
+        // Samsung-specific admin-related keywords (One UI may use these instead of stock "device admin")
+        val hasAdminKeyword = combined.contains("device admin") ||
+                combined.contains("device administrator") ||
+                combined.contains("admin app") ||
+                combined.contains("device management") ||
+                combined.contains("device manager") ||
+                combined.contains("admin rights") ||
+                combined.contains("ডিভাইস অ্যাডমিন") ||
+                combined.contains("ডিভাইস ম্যানেজমেন্ট") ||
+                viewId.contains("device_admin") ||
+                viewId.contains("dm_") ||
+                viewId.contains("admin")
 
-        // Dialog popup confirming deactivation of device administrator (ONLY when Device Admin is already active!)
-        val isDeviceAdminDeactivationDialog = isDeviceAdminActive &&
-                (combined.contains("deactivate") || combined.contains("remove")) &&
-                (combined.contains("device admin") || combined.contains("administrator") || isTargetingReclaim) &&
-                (combined.contains("cancel") || viewId.contains("button1") || viewId.contains("button2"))
-
-        // Activating Device Admin prompt during setup (ALWAYS allowed!)
-        val isActivatingDeviceAdmin = !isExplicitDeactivate && !isDeviceAdminDeactivationDialog && (
-                combined.contains("activate this device admin") ||
-                combined.contains("activate device admin") ||
-                combined.contains("activate this admin app") ||
-                combined.contains("activate this device") ||
-                combined.contains("activate admin app") ||
-                combined.contains("add device admin") ||
-                (combined.contains("device admin") && (combined.contains("activate") || combined.contains("enable") || combined.contains("turn on")))
-        )
-
-        val isDeviceAdminDeactivation = isDeviceAdminActive && canEnforceTamper && (isExplicitDeactivate || isDeviceAdminDeactivationDialog)
-
-        if (isDeviceAdminDeactivation) {
-            return EvaluationResult(
-                isBlocked = true,
-                category = BlockCategory.CUSTOM,
-                reason = "Deactivating Device Administrator is blocked while Uninstall Protection or Accountability is active."
-            )
-        }
-
-        if (isActivatingDeviceAdmin) {
-            return EvaluationResult(isBlocked = false)
-        }
-
-        // 2. Identify general list screens that must NOT be blocked (so user can manage other apps freely)
+        // General list screens that must NOT be blocked (so user can manage other apps freely)
         val isGeneralAccessibilityListPage = (combined.contains("installed apps") ||
                 combined.contains("installed services") ||
                 combined.contains("downloaded apps") ||
@@ -1219,7 +1195,15 @@ object RuleEngine {
                 combined.contains("manage apps")) &&
                 !combined.contains("force stop") &&
                 !viewId.contains("force_stop") &&
-                !combined.contains("do you want to uninstall")
+                !combined.contains("do you want to uninstall") &&
+                !combined.contains("device admin") &&
+                !combined.contains("device administrator") &&
+                !combined.contains("deactivate") &&
+                !combined.contains("software information") &&
+                !combined.contains("software info") &&
+                !combined.contains("build number") &&
+                !combined.contains("বিল্ড নম্বর") &&
+                !combined.contains("reclaim")
 
         val isGeneralPermissionOrSpecialAccessList = (combined.contains("usage access") ||
                 combined.contains("usage data") ||
@@ -1227,11 +1211,134 @@ object RuleEngine {
                 combined.contains("display over other apps") ||
                 combined.contains("draw over other apps") ||
                 combined.contains("special app access") ||
-                combined.contains("special access") ||
-                combined.contains("device admin apps") ||
-                combined.contains("device admin")) &&
-                (combined.contains("find my device") || combined.contains("google play") || isAppListScreen || !isDeviceAdminActive) &&
+                combined.contains("special access")) &&
+                !combined.contains("device admin") &&
+                !combined.contains("device administrator") &&
+                !combined.contains("device manager") &&
                 !combined.contains("deactivate") && !combined.contains("force stop")
+
+        // 1. Double layer: Block "Device admin apps" list page completely
+        val isDeviceAdminAppsScreen = canEnforceTamper && (
+                combined.contains("device admin apps") ||
+                combined.contains("device admin app") ||
+                combined.contains("device administrators") ||
+                combined.contains("device administrator") ||
+                combined.contains("device management") ||
+                combined.contains("ডিভাইস অ্যাডমিন") ||
+                combined.contains("enforce password requirements") ||
+                combined.contains("other security policies") ||
+                combined.contains("employers often use device admin") ||
+                (combined.contains("device admin") && combined.contains("reclaim")) ||
+                viewId.contains("device_admin") ||
+                viewId.contains("dm_")
+        )
+
+        if (isDeviceAdminAppsScreen) {
+            android.util.Log.d("RuleEngine", "BLOCKED: Device Admin Apps screen (double layer)")
+            return EvaluationResult(
+                isBlocked = true,
+                category = BlockCategory.CUSTOM,
+                reason = "Accessing Device Admin apps is blocked while Uninstall Protection or Accountability is active."
+            )
+        }
+
+        // 1A. EXACT match for Reclaim's Device Admin Deactivation page (from user screenshot)
+        val isReclaimDeactivationPageExact = canEnforceTamper && (
+                combined.contains("reclaim_device_admin_detail_page") ||
+                combined.contains("this admin app is active") ||
+                combined.contains("allows reclaim to perform") ||
+                combined.contains("admin app is active") ||
+                (combined.contains("reclaim") && combined.contains("deactivate")) ||
+                (combined.contains("this admin app is active") && combined.contains("deactivate")) ||
+                (combined.contains("this admin app is active") && combined.contains("cancel")) ||
+                (isTargetingReclaim && combined.contains("deactivate"))
+        )
+
+        if (isReclaimDeactivationPageExact) {
+            android.util.Log.d("RuleEngine", "BLOCKED: Reclaim Device Admin deactivation page (exact match from screenshot)")
+            return EvaluationResult(
+                isBlocked = true,
+                category = BlockCategory.CUSTOM,
+                reason = "Deactivating Device Administrator is blocked while Uninstall Protection or Accountability is active."
+            )
+        }
+
+        // 1B. Block Software Information screen completely (user request: "block going to software information page")
+        val isSoftwareInfoScreen = canEnforceTamper && (
+                combined.contains("software information") ||
+                combined.contains("software info") ||
+                combined.contains("সফটওয়্যার তথ্য") ||
+                combined.contains("সফটওয়্যার ইনফো") ||
+                viewId.contains("software_info") ||
+                viewId.contains("software_information") ||
+                combined.contains("build number") ||
+                combined.contains("বিল্ড নম্বর")
+        )
+
+        if (isSoftwareInfoScreen) {
+            android.util.Log.d("RuleEngine", "BLOCKED: Software information screen completely")
+            return EvaluationResult(
+                isBlocked = true,
+                category = BlockCategory.CUSTOM,
+                reason = "Accessing Software Information is blocked while Prevent Uninstall or Accountability Lock is active."
+            )
+        }
+
+        // 1C. Explicit deactivation keywords / actions targeting Device Admin
+        val isExplicitDeactivate = canEnforceTamper && (
+                combined.contains("deactivate this device admin") ||
+                combined.contains("deactivate device admin") ||
+                combined.contains("deactivate device admin app") ||
+                combined.contains("deactivate this device admin app") ||
+                combined.contains("deactivate this admin app") ||
+                combined.contains("remove device admin") ||
+                combined.contains("deactivate this app") ||
+                combined.contains("turn off device admin") ||
+                combined.contains("disable device admin") ||
+                (combined.contains("deactivate") && (isTargetingReclaim || hasAdminKeyword)) ||
+                (combined.contains("নিষ্ক্রিয়") && (isTargetingReclaim || hasAdminKeyword)) ||
+                (combined.contains("turn off") && (hasAdminKeyword || isTargetingReclaim)) ||
+                (combined.contains("disable") && (hasAdminKeyword || isTargetingReclaim)) ||
+                viewId.contains("deactivate") ||
+                (isTargetingReclaim && hasAdminKeyword && (combined.contains("deactivate") || combined.contains("remove") || combined.contains("turn off") || combined.contains("disable") || combined.contains("uninstall")))
+        )
+
+        // Dialog popup confirming deactivation of device administrator
+        val isDeviceAdminDeactivationDialog = canEnforceTamper &&
+                (combined.contains("deactivate") || combined.contains("remove") || combined.contains("turn off") || combined.contains("disable") || combined.contains("নিষ্ক্রিয়")) &&
+                (hasAdminKeyword || isTargetingReclaim) &&
+                (combined.contains("cancel") || viewId.contains("button1") || viewId.contains("button2"))
+
+        // Activating Device Admin prompt during setup (ALWAYS allowed!)
+        val isActivatingDeviceAdmin = !isExplicitDeactivate && !isDeviceAdminDeactivationDialog && (
+                combined.contains("activate this device admin") ||
+                combined.contains("activate device admin") ||
+                combined.contains("activate this admin app") ||
+                combined.contains("activate this device") ||
+                combined.contains("activate admin app") ||
+                (combined.contains("activate") && (combined.contains("device admin") || combined.contains("admin app")))
+        )
+
+        val isDeviceAdminDeactivation = canEnforceTamper && (
+                isExplicitDeactivate ||
+                isDeviceAdminDeactivationDialog ||
+                isReclaimDeactivationPageExact ||
+                isDeviceAdminAppsScreen
+        )
+
+        if (isDeviceAdminDeactivation) {
+            android.util.Log.d("RuleEngine", "BLOCKED: Device Admin deactivation")
+            return EvaluationResult(
+                isBlocked = true,
+                category = BlockCategory.CUSTOM,
+                reason = "Deactivating Device Administrator is blocked while Uninstall Protection or Accountability is active."
+            )
+        }
+
+        if (isActivatingDeviceAdmin) {
+            return EvaluationResult(isBlocked = false)
+        }
+
 
         // 3. Direct uninstall attempts targeting Reclaim (enforced when Prevent Uninstall or Accountability is active)
         val isUninstallAction = canEnforceUninstall && (
@@ -1247,6 +1354,22 @@ object RuleEngine {
             ((packageName == "com.android.vending" || packageName == "com.sec.android.app.samsungapps") &&
                 isTargetingReclaim && (combined.contains("uninstall") || combined.contains("do you want to uninstall")))
         )
+
+        // Block updating / downgrading / reinstalling Reclaim (via package installer, file manager, etc.)
+        val isReclaimUpdateAction = canEnforceUninstall && isTargetingReclaim && (
+            combined.contains("install") ||
+            combined.contains("update") ||
+            combined.contains("replace") ||
+            combined.contains("downgrade") ||
+            combined.contains("do you want to install") ||
+            combined.contains("want to update") ||
+            combined.contains("existing app") ||
+            combined.contains("existing application") ||
+            combined.contains("app will be replaced") ||
+            combined.contains("version of this app") ||
+            combined.contains("ইনস্টল") ||
+            combined.contains("আপডেট")
+        ) && !combined.contains("uninstall")
 
         // 4. Force Stop attempts targeting Reclaim (enforced when Accountability or Prevent Uninstall is active)
         val isForceStopAction = canEnforceTamper && (
@@ -1340,30 +1463,59 @@ object RuleEngine {
                 combined.contains("developer settings") ||
                 combined.contains("development settings") ||
                 combined.contains("options for developers") ||
+                combined.contains("ডেভেলপার অপশন") ||
                 viewId.contains("development_settings") ||
-                viewId.contains("developer_options")) && (
-                combined.contains("usb debugging") ||
-                combined.contains("wireless debugging") ||
-                combined.contains("stay awake") ||
-                combined.contains("bug report") ||
-                combined.contains("oem unlocking") ||
-                combined.contains("demo mode") ||
-                combined.contains("quick settings developer tiles") ||
-                viewId.contains("switch_bar") ||
-                viewId.contains("main_switch") ||
-                viewId.contains("development_settings") ||
-                viewId.contains("developer_options")
-        )
+                viewId.contains("developer_options") ||
+                viewId.contains("development_switch"))
+
+        val isInsideSoftwareInfoScreen = (combined.contains("software information") ||
+                combined.contains("software info") ||
+                combined.contains("one ui version") ||
+                combined.contains("one ui core version") ||
+                combined.contains("build number") ||
+                combined.contains("build_number") ||
+                combined.contains("baseband version") ||
+                combined.contains("kernel version") ||
+                combined.contains("knox version") ||
+                combined.contains("se for android") ||
+                combined.contains("service provider sw") ||
+                combined.contains("বিল্ড নম্বর") ||
+                combined.contains("সফটওয়্যার তথ্য") ||
+                combined.contains("সফটওয়্যার ইনফো") ||
+                viewId.contains("software_info") ||
+                viewId.contains("build_number") ||
+                viewId.contains("sw_update"))
+
+        // Samsung path: Settings → About phone (this is where "Software information" link lives)
+        val isAboutPhoneScreen = (combined.contains("about phone") ||
+                combined.contains("about device") ||
+                combined.contains("about tablet") ||
+                combined.contains("ফোন সম্পর্কে") ||
+                combined.contains("ডিভাইস সম্পর্কে") ||
+                viewId.contains("about_phone") ||
+                viewId.contains("about_device")) &&
+                (combined.contains("software information") ||
+                 combined.contains("build number") ||
+                 combined.contains("software info") ||
+                 combined.contains("status") ||
+                 viewId.contains("software_info"))
 
         val isDeveloperOptionsAttempt = canEnforceTamper && (
             isInsideDeveloperOptionsScreen ||
+            isInsideSoftwareInfoScreen ||
+            isAboutPhoneScreen ||
             combined.contains("usb debugging") ||
             combined.contains("wireless debugging") ||
             combined.contains("install via usb") ||
             combined.contains("oem unlocking") ||
             combined.contains("you are now a developer") ||
             combined.contains("steps away from being a developer") ||
-            (combined.contains("build number") && (combined.contains("developer") || combined.contains("already a developer") || combined.contains("step") || viewId.contains("build_number")))
+            combined.contains("developer mode has been") ||
+            combined.contains("turn on developer mode") ||
+            combined.contains("enable developer mode") ||
+            combined.contains("developer mode is already") ||
+            combined.contains("no need, developer mode") ||
+            combined.contains("ইউএসবি ডিবাগিং")
         )
 
         // 11. Changing Date and Time settings to bypass schedules/timers
@@ -1397,6 +1549,14 @@ object RuleEngine {
                 isBlocked = true,
                 category = BlockCategory.CUSTOM,
                 reason = "Uninstall Protection is active. Reclaim is protected against uninstallation until your timer finishes or partner unlocks."
+            )
+        }
+
+        if (isReclaimUpdateAction) {
+            return EvaluationResult(
+                isBlocked = true,
+                category = BlockCategory.CUSTOM,
+                reason = "Updating, reinstalling, or downgrading Reclaim is blocked while Prevent Uninstall is active. Disable Prevent Uninstall first."
             )
         }
 
@@ -1439,6 +1599,7 @@ object RuleEngine {
                 reason = "Deactivating Device Administrator is blocked while Uninstall Protection or Accountability is active."
             )
         }
+
 
         if (isAccessibilityTampering) {
             return EvaluationResult(

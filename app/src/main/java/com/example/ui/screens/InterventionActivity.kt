@@ -111,14 +111,17 @@ class InterventionActivity : ComponentActivity() {
             packageName: String? = null,
             bypassCooldown: Boolean = false
         ) {
+            val now = android.os.SystemClock.uptimeMillis()
             if (isShowing && !bypassCooldown) {
                 return
             }
-            val now = android.os.SystemClock.uptimeMillis()
+            if (isShowing && now - lastStartTime < 1000L) {
+                return
+            }
             if (!bypassCooldown && isInDismissCooldown(packageName)) {
                 return
             }
-            val minInterval = if (bypassCooldown) 0L else 800L
+            val minInterval = if (bypassCooldown) 500L else 800L
             if (minInterval > 0L && now - lastStartTime < minInterval) {
                 return
             }
@@ -175,36 +178,19 @@ class InterventionActivity : ComponentActivity() {
 
     override fun onPause() {
         super.onPause()
-        isShowing = false
+        // Do NOT set isShowing = false here; activity is still visible during transitions or dialogs
     }
 
     override fun onWindowFocusChanged(hasFocus: Boolean) {
         super.onWindowFocusChanged(hasFocus)
-        isShowing = hasFocus
+        if (hasFocus) {
+            isShowing = true
+        }
     }
 
     override fun onUserLeaveHint() {
         super.onUserLeaveHint()
-        val prefs = SelfControlApp.repository.preferences
-        val isTamper = targetState.contains("Uninstall", ignoreCase = true) ||
-                targetState.contains("Permission", ignoreCase = true) ||
-                targetState.contains("Tamper", ignoreCase = true) ||
-                targetState.contains("Accessibility", ignoreCase = true) ||
-                targetState.contains("Force Stop", ignoreCase = true) ||
-                targetState.contains("App Info", ignoreCase = true)
-
-        if (prefs.cachedPersistentBlockScreen || isTamper) {
-            try {
-                com.example.service.accessibility.SelfControlAccessibilityService.resetAppToSafeState(packageState)
-            } catch (_: Throwable) {}
-            val homeIntent = Intent(Intent.ACTION_MAIN).apply {
-                addCategory(Intent.CATEGORY_HOME)
-                flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
-            }
-            try {
-                startActivity(homeIntent)
-            } catch (_: Throwable) {}
-        }
+        // Do NOT launch homeIntent here as it minimizes the block screen and allows bypassing it.
     }
 
     override fun onStop() {
@@ -320,7 +306,17 @@ fun BlockedInterventionScreen(
     onUnlock: () -> Unit = onGoHome,
     overrideConfig: BlockScreenCustomizationData? = null
 ) {
-    BackHandler(onBack = onGoHome)
+    var canDismissByBack by remember { mutableStateOf(false) }
+    LaunchedEffect(Unit) {
+        kotlinx.coroutines.delay(800L)
+        canDismissByBack = true
+    }
+
+    BackHandler(enabled = true) {
+        if (canDismissByBack) {
+            onGoHome()
+        }
+    }
 
     val context = LocalContext.current
     val prefs = remember { SelfControlApp.repository.preferences }

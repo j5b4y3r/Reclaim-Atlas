@@ -101,5 +101,6 @@ class SelfControlApp : Application() {
                 )
             }
         } catch (_: Exception) {}
+
     }
 }

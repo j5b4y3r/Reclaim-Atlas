@@ -100,12 +100,6 @@ class PreferencesManager(private val context: Context) {
         val KEY_BASELINE_INSTALLED_PACKAGES = stringSetPreferencesKey("baseline_installed_packages")
         val KEY_HIDDEN_NEWLY_INSTALLED_PACKAGES = stringSetPreferencesKey("hidden_newly_installed_packages")
 
-        // AI Modesty Guard Keys (Layer 4 On-Device Vision)
-        val KEY_AI_MODESTY_GUARD_ENABLED = booleanPreferencesKey("ai_modesty_guard_enabled")
-        val KEY_AI_MODESTY_SCAN_FPS = intPreferencesKey("ai_modesty_scan_fps")
-        val KEY_AI_MODESTY_SHIELD_STYLE = stringPreferencesKey("ai_modesty_shield_style")
-        val KEY_AI_MODESTY_BLUR_INTENSITY = intPreferencesKey("ai_modesty_blur_intensity")
-        val KEY_AI_MODESTY_SENSITIVITY = stringPreferencesKey("ai_modesty_sensitivity")
 
         // Blocked Screen Customization Keys
         val KEY_CUSTOM_BLOCKED_MESSAGE = stringPreferencesKey("custom_blocked_message")
@@ -176,8 +170,6 @@ class PreferencesManager(private val context: Context) {
         private set
     @Volatile var cachedUnsupportedBrowsersBlocked: Boolean = false
         private set
-    @Volatile var cachedAiModestyGuardEnabled: Boolean = false
-        private set
     @Volatile var cachedAccountabilityEnabled: Boolean = false
         private set
     @Volatile var cachedAccountabilityStartHour: Int = 12
@@ -245,7 +237,6 @@ class PreferencesManager(private val context: Context) {
                     cachedUninstallProtectionUntil = prefs[KEY_UNINSTALL_PROTECTION_UNTIL] ?: 0L
                     cachedNewAppsBlocked = prefs[KEY_NEW_APPS_BLOCKED] ?: false
                     cachedUnsupportedBrowsersBlocked = prefs[KEY_UNSUPPORTED_BROWSERS_BLOCKED] ?: false
-                    cachedAiModestyGuardEnabled = prefs[KEY_AI_MODESTY_GUARD_ENABLED] ?: false
                     cachedAccountabilityEnabled = prefs[KEY_ACCOUNTABILITY_ENABLED] ?: false
                     cachedAccountabilityStartHour = prefs[KEY_ACCOUNTABILITY_START_HOUR] ?: 12
                     cachedAccountabilityStartMinute = prefs[KEY_ACCOUNTABILITY_START_MINUTE] ?: 0
@@ -458,25 +449,6 @@ class PreferencesManager(private val context: Context) {
         prefs[KEY_UNSUPPORTED_BROWSERS_BLOCKED] ?: false
     }
 
-    val aiModestyGuardEnabled: Flow<Boolean> = context.dataStore.data.map { prefs ->
-        prefs[KEY_AI_MODESTY_GUARD_ENABLED] ?: false
-    }
-
-    val aiModestyScanFps: Flow<Int> = context.dataStore.data.map { prefs ->
-        prefs[KEY_AI_MODESTY_SCAN_FPS] ?: 3
-    }
-
-    val aiModestyShieldStyle: Flow<String> = context.dataStore.data.map { prefs ->
-        prefs[KEY_AI_MODESTY_SHIELD_STYLE] ?: "TARGETED_BLUR"
-    }
-
-    val aiModestyBlurIntensity: Flow<Int> = context.dataStore.data.map { prefs ->
-        prefs[KEY_AI_MODESTY_BLUR_INTENSITY] ?: 80
-    }
-
-    val aiModestySensitivity: Flow<String> = context.dataStore.data.map { prefs ->
-        prefs[KEY_AI_MODESTY_SENSITIVITY] ?: "STRICT_AWRAH"
-    }
 
     val newAppsBlocked: Flow<Boolean> = context.dataStore.data.map { prefs ->
         prefs[KEY_NEW_APPS_BLOCKED] ?: false
@@ -729,6 +701,9 @@ class PreferencesManager(private val context: Context) {
         }
         cachedUninstallProtection = enabled
         cachedUninstallProtectionUntil = untilTime
+        if (!enabled) {
+            com.example.util.PermissionHelper.removeDeviceAdmin(context)
+        }
         syncPrefs.edit()
             .putBoolean("uninstall_protection", enabled)
             .putLong("uninstall_protection_until", untilTime)
@@ -772,41 +747,6 @@ class PreferencesManager(private val context: Context) {
         context.dataStore.edit { it[KEY_UNSUPPORTED_BROWSERS_BLOCKED] = blocked }
     }
 
-    suspend fun setAiModestyGuardEnabled(enabled: Boolean) {
-        context.dataStore.edit { it[KEY_AI_MODESTY_GUARD_ENABLED] = enabled }
-    }
-
-    suspend fun setAiModestyGuardConfig(
-        enabled: Boolean,
-        scanFps: Int,
-        shieldStyle: String,
-        blurIntensity: Int,
-        sensitivity: String
-    ) {
-        context.dataStore.edit { prefs ->
-            prefs[KEY_AI_MODESTY_GUARD_ENABLED] = enabled
-            prefs[KEY_AI_MODESTY_SCAN_FPS] = scanFps
-            prefs[KEY_AI_MODESTY_SHIELD_STYLE] = shieldStyle
-            prefs[KEY_AI_MODESTY_BLUR_INTENSITY] = blurIntensity
-            prefs[KEY_AI_MODESTY_SENSITIVITY] = sensitivity
-        }
-    }
-
-    suspend fun setAiModestyScanFps(fps: Int) {
-        context.dataStore.edit { it[KEY_AI_MODESTY_SCAN_FPS] = fps }
-    }
-
-    suspend fun setAiModestyShieldStyle(style: String) {
-        context.dataStore.edit { it[KEY_AI_MODESTY_SHIELD_STYLE] = style }
-    }
-
-    suspend fun setAiModestyBlurIntensity(intensity: Int) {
-        context.dataStore.edit { it[KEY_AI_MODESTY_BLUR_INTENSITY] = intensity }
-    }
-
-    suspend fun setAiModestySensitivity(sensitivity: String) {
-        context.dataStore.edit { it[KEY_AI_MODESTY_SENSITIVITY] = sensitivity }
-    }
 
     suspend fun setNewAppsBlocked(blocked: Boolean) {
         if (blocked) {

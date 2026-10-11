@@ -16,6 +16,7 @@ import com.example.domain.engine.AccountabilityLockStatus
 import com.example.domain.engine.LockedActionTarget
 import com.example.service.focus.FocusModeService
 import com.example.service.vpn.SelfControlVpnService
+import com.example.util.PermissionHelper
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -128,20 +129,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val newAppsBlocked: StateFlow<Boolean> = prefs.newAppsBlocked
         .stateIn(viewModelScope, SharingStarted.Lazily, false)
 
-    val aiModestyGuardEnabled: StateFlow<Boolean> = prefs.aiModestyGuardEnabled
-        .stateIn(viewModelScope, SharingStarted.Lazily, false)
-
-    val aiModestyScanFps: StateFlow<Int> = prefs.aiModestyScanFps
-        .stateIn(viewModelScope, SharingStarted.Lazily, 3)
-
-    val aiModestyShieldStyle: StateFlow<String> = prefs.aiModestyShieldStyle
-        .stateIn(viewModelScope, SharingStarted.Lazily, "TARGETED_BLUR")
-
-    val aiModestyBlurIntensity: StateFlow<Int> = prefs.aiModestyBlurIntensity
-        .stateIn(viewModelScope, SharingStarted.Lazily, 80)
-
-    val aiModestySensitivity: StateFlow<String> = prefs.aiModestySensitivity
-        .stateIn(viewModelScope, SharingStarted.Lazily, "STRICT_AWRAH")
 
     val safeSearchEnforced: StateFlow<Boolean> = prefs.safeSearchEnforced
         .stateIn(viewModelScope, SharingStarted.Lazily, false)
@@ -801,6 +788,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 prefs.setUninstallProtectionConfig(enabled = true, durationDays = durationDays)
                 repository.clearPartnerRequestForAction("ADV_UNINSTALL_PROTECTION")
             }
+            // Request battery optimization exemption to prevent Samsung/OEM battery savers
+            // from killing the app process and revoking Device Admin when swiped from recents
+            if (!PermissionHelper.isBatteryOptimizationExempt(getApplication())) {
+                PermissionHelper.requestBatteryOptimizationExemption(getApplication())
+            }
         } else {
             tryDisableUninstallProtection()
         }
@@ -840,40 +832,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun setAiModestyGuardEnabled(enabled: Boolean) {
-        val actionKey = "ADV_AI_MODESTY_GUARD"
-        if (!enabled) {
-            val lockStatus = checkAccountabilityLock(
-                LockedActionTarget(actionKey = actionKey, actionTitle = "Turn Off 'AI Modesty Guard'")
-            )
-            if (lockStatus.isLocked) {
-                _accountabilityLockDialogState.value = lockStatus
-                return
-            }
-        }
-        viewModelScope.launch {
-            prefs.setAiModestyGuardEnabled(enabled)
-            if (enabled) repository.clearPartnerRequestForAction(actionKey)
-        }
-    }
-
-    fun activateAiModestyGuard(
-        scanFps: Int,
-        shieldStyle: String,
-        blurIntensity: Int,
-        sensitivity: String
-    ) {
-        viewModelScope.launch {
-            prefs.setAiModestyGuardConfig(
-                enabled = true,
-                scanFps = scanFps,
-                shieldStyle = shieldStyle,
-                blurIntensity = blurIntensity,
-                sensitivity = sensitivity
-            )
-            repository.clearPartnerRequestForAction("ADV_AI_MODESTY_GUARD")
-        }
-    }
 
     fun setSafeSearchEnforced(enforced: Boolean) {
         val actionKey = "ADV_SAFESEARCH"

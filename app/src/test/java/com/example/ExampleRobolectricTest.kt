@@ -17,7 +17,7 @@ import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
 
 @RunWith(RobolectricTestRunner::class)
-@Config(sdk = [36])
+@Config(sdk = [34])
 class ExampleRobolectricTest {
 
   @Test
@@ -114,6 +114,70 @@ class ExampleRobolectricTest {
     val controller = org.robolectric.Robolectric.buildActivity(MainActivity::class.java).setup()
     val activity = controller.get()
     assertNotNull(activity)
+  }
+
+  @Test
+  fun `reclaim device admin deactivation page from screenshot is blocked`() {
+    val result = com.example.domain.engine.RuleEngine.evaluateUninstallAttempt(
+      packageName = "com.android.settings",
+      viewContentDescription = "",
+      viewText = "Reclaim This admin app is active and allows Reclaim to perform the following actions: Cancel Deactivate",
+      viewId = "",
+      isUninstallProtectionEnabled = true
+    )
+    assertTrue("Reclaim device admin deactivation screen must be blocked", result.isBlocked)
+    assertEquals(
+      "Deactivating Device Administrator is blocked while Uninstall Protection or Accountability is active.",
+      result.reason
+    )
+  }
+
+  @Test
+  fun `device admin apps list screen is double layer blocked`() {
+    val result = com.example.domain.engine.RuleEngine.evaluateUninstallAttempt(
+      packageName = "com.android.settings",
+      viewContentDescription = "",
+      viewText = "Device admin apps Reclaim Find My Device",
+      viewId = "",
+      isUninstallProtectionEnabled = true
+    )
+    assertTrue("Device admin apps list page must be blocked", result.isBlocked)
+  }
+
+  @Test
+  fun `software information screen is blocked completely`() {
+    val result = com.example.domain.engine.RuleEngine.evaluateUninstallAttempt(
+      packageName = "com.android.settings",
+      viewContentDescription = "",
+      viewText = "Software information One UI version 5.1 Android version 13 Build number TP1A.220624.014",
+      viewId = "",
+      isUninstallProtectionEnabled = true
+    )
+    assertTrue("Software information screen must be blocked", result.isBlocked)
+  }
+
+  @Test
+  fun `general settings screen is allowed`() {
+    val result = com.example.domain.engine.RuleEngine.evaluateUninstallAttempt(
+      packageName = "com.android.settings",
+      viewContentDescription = "",
+      viewText = "Wi-Fi Network & internet Connected to Home_5G",
+      viewId = "",
+      isUninstallProtectionEnabled = true
+    )
+    assertFalse("General settings like Wi-Fi must be allowed", result.isBlocked)
+  }
+
+  @Test
+  fun `reclaim update action in file manager is blocked`() {
+    val result = com.example.domain.engine.RuleEngine.evaluateUninstallAttempt(
+      packageName = "com.sec.android.app.myfiles",
+      viewContentDescription = "",
+      viewText = "Do you want to install an update to this existing application Reclaim? Cancel Install",
+      viewId = "",
+      isUninstallProtectionEnabled = true
+    )
+    assertTrue("Updating Reclaim via File Manager must be blocked", result.isBlocked)
   }
 }
 

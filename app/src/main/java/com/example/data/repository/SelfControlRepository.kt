@@ -912,7 +912,6 @@ class SelfControlRepository(
             "ADV_UNINSTALL_PROTECTION" -> preferences.setUninstallProtectionConfig(enabled = false, durationDays = 1)
             "ADV_NEW_APPS_BLOCKED" -> preferences.setNewAppsBlocked(false)
             "ADV_UNSUPPORTED_BROWSERS" -> preferences.setUnsupportedBrowsersBlocked(false)
-            "ADV_AI_MODESTY_GUARD" -> preferences.setAiModestyGuardEnabled(false)
             "ADV_SAFESEARCH" -> preferences.setSafeSearchEnforced(false)
             "ADV_VPN_FILTER" -> preferences.setVpnEnabled(false)
             "ADV_ACCESSIBILITY" -> preferences.setAccessibilityEnabled(false)

@@ -38,6 +38,9 @@ class SelfControlAccessibilityService : AccessibilityService() {
             private set
 
         @Volatile
+        var isDeviceAdminActiveCached = false
+
+        @Volatile
         var shortsInterventionsCount = 0
             private set
 
@@ -114,6 +117,14 @@ class SelfControlAccessibilityService : AccessibilityService() {
                     packageName.contains("devicepolicy", ignoreCase = true) ||
                     packageName.contains("securitycenter", ignoreCase = true) ||
                     packageName.contains("safecenter", ignoreCase = true) ||
+                    packageName.contains("knox", ignoreCase = true) ||
+                    packageName.contains("security", ignoreCase = true) ||
+                    packageName.contains("admin", ignoreCase = true) ||
+                    packageName.contains("policy", ignoreCase = true) ||
+                    packageName.contains("file", ignoreCase = true) ||
+                    packageName.contains("myfiles", ignoreCase = true) ||
+                    packageName.contains("documentsui", ignoreCase = true) ||
+                    packageName.contains("explorer", ignoreCase = true) ||
                     packageName == "com.android.vending" ||
                     packageName == "com.sec.android.app.samsungapps"
         }
@@ -190,35 +201,14 @@ class SelfControlAccessibilityService : AccessibilityService() {
     @Volatile
     private var lastEvaluatedTime: Long = 0L
 
-    private var modestyOverlayManager: com.example.service.vision.ModestyOverlayManager? = null
-    private var modestyScreenScanner: com.example.service.vision.ModestyScreenScanner? = null
-
     override fun onServiceConnected() {
         super.onServiceConnected()
         isRunning = true
         instance = this
 
-        val overlay = com.example.service.vision.ModestyOverlayManager(this)
-        val scanner = com.example.service.vision.ModestyScreenScanner(this, overlay)
-        modestyOverlayManager = overlay
-        modestyScreenScanner = scanner
-
         serviceScope.launch {
             try {
-                SelfControlApp.repository.preferences.aiModestyGuardEnabled.collect { enabled ->
-                    if (enabled) {
-                        scanner.start()
-                    } else {
-                        scanner.stop()
-                    }
-                }
-            } catch (t: Throwable) {
-                Log.e("AccessibilityService", "Error collecting aiModestyGuardEnabled", t)
-            }
-        }
-
-        serviceScope.launch {
-            try {
+                isDeviceAdminActiveCached = com.example.util.PermissionHelper.isDeviceAdminActive(this@SelfControlAccessibilityService)
                 SelfControlApp.repository.preferences.ensureNewAppsBaselineInitialized()
             } catch (_: Throwable) {}
         }
@@ -267,14 +257,16 @@ class SelfControlAccessibilityService : AccessibilityService() {
         // Whenever the user returns to Home Launcher or SystemUI (Recents), reset the blocked cooldown
         // so reopening the app from minimize/Recents triggers the block screen 100% of the time!
         if (packageName == "com.android.systemui" || getAllHomeLauncherPackages().contains(packageName)) {
-            val isUninstallProtection = SelfControlApp.repository.preferences.cachedUninstallProtection && com.example.util.PermissionHelper.isDeviceAdminActive(this)
+            val isUninstallProtection = SelfControlApp.repository.preferences.cachedUninstallProtection ||
+                isDeviceAdminActiveCached ||
+                com.example.util.PermissionHelper.isDeviceAdminActive(this)
             if (isUninstallProtection) {
                 val root = try { rootInActiveWindow ?: event.source } catch (_: Throwable) { event.source }
                 if (root != null) {
                     val quickText = collectQuickWindowText(root).lowercase()
                     if (quickText.contains("uninstall") && (quickText.contains("reclaim") || quickText.contains("healinglab") || quickText.contains("copsli"))) {
                         serviceScope.launch {
-                            inspectNodeForUninstall(root, packageName, isUninstallProtection = true)
+                            inspectNodeForUninstall(root, packageName, isUninstallProtection = true, isDeviceAdmin = true)
                         }
                         return
                     }
@@ -284,13 +276,12 @@ class SelfControlAccessibilityService : AccessibilityService() {
             return
         }
 
+        val eventSource = try { event.source } catch (_: Throwable) { null }
+        val eventType = event.eventType
+
         val now = SystemClock.uptimeMillis()
         val isSettings = isSettingsOrAccessibilityPkg(packageName)
-        if (InterventionActivity.isShowing) {
-            if (!isSettings) {
-                return
-            }
-        }
+        // (Removed InterventionActivity.isShowing early return to prevent floating-window bypasses)
         if (!isSettings && InterventionActivity.isInDismissCooldown(packageName)) {
             return
         }
@@ -301,11 +292,6 @@ class SelfControlAccessibilityService : AccessibilityService() {
         }
         lastEvaluatedPackage = packageName
         lastEvaluatedTime = now
-
-        val eventSource = try { event.source } catch (_: Throwable) { null }
-        val rootForMedia = try { rootInActiveWindow ?: eventSource } catch (_: Throwable) { eventSource }
-        modestyScreenScanner?.onWindowContentChanged(rootForMedia)
-        val eventType = event.eventType
 
         // When the user opens or switches to an app window, clear any temporary ignore window so detection is 100% instant (0ms delay)
         if (eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED && !isCoreSystemOrLauncherPackage(packageName)) {
@@ -321,6 +307,192 @@ class SelfControlAccessibilityService : AccessibilityService() {
 
         serviceScope.launch {
             try {
+                // --- FAST-PATH: SAMSUNG ONE UI WINDOW TITLE + CLASS NAME FIX ---
+                // Samsung One UI wraps all sub-pages in SubSettings and BLOCKS AccessibilityNodeInfo
+                // content for security-sensitive pages (DeviceAdminAdd, SoftwareInfo).
+                // However, AccessibilityWindowInfo.getTitle() IS exposed by Samsung even for blocked pages.
+                // We use window titles as the primary detection method, with node text as fallback.
+                if (eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED ||
+                    eventType == AccessibilityEvent.TYPE_WINDOWS_CHANGED ||
+                    eventType == AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED) {
+                    val className = event.className?.toString()?.lowercase() ?: ""
+                    val isSettingsPkg = isSettingsOrAccessibilityPkg(packageName)
+                    if (isSettingsPkg) {
+                        val prefs = SelfControlApp.repository.preferences
+                        val isUninstallProtection = prefs.cachedUninstallProtection
+                        val isAccEnabled = prefs.cachedAccountabilityEnabled
+                        val isAccountabilityLocked = isAccEnabled || SelfControlApp.repository.getActiveSession() != null || SelfControlApp.repository.getActiveFocusSchedule() != null
+                        val isRealAdmin = isDeviceAdminActiveCached || com.example.util.PermissionHelper.isDeviceAdminActive(this@SelfControlAccessibilityService)
+                        val canEnforceTamper = isUninstallProtection || isAccountabilityLocked || isRealAdmin
+
+                        if (canEnforceTamper) {
+                            val allWindowTitles = try {
+                                windows?.mapNotNull { w ->
+                                    w?.title?.toString()?.trim()?.lowercase()
+                                } ?: emptyList()
+                            } catch (_: Throwable) { emptyList() }
+                            val windowTitleText = allWindowTitles.joinToString(" ")
+
+                            val quickRoot = try { rootInActiveWindow ?: eventSource } catch (_: Throwable) { eventSource }
+                            val quickWindowText = quickRoot?.let { collectQuickWindowText(it) }?.lowercase() ?: ""
+
+                            val allText = (eventTexts.joinToString(" ") + " " + quickWindowText + " " + windowTitleText).lowercase()
+
+                            // 1. Device Admin Apps list (Image 1) or Reclaim Device Admin deactivation page (Image 2)
+                            val isReclaimDeactivateScreen =
+                                className.contains("deviceadminadd") ||
+                                className.contains("deviceadmin") ||
+                                className.contains("device_admin") ||
+                                className.contains("devicepolicy") ||
+                                allText.contains("this admin app is active") ||
+                                allText.contains("allows reclaim to perform") ||
+                                allText.contains("admin app is active") ||
+                                allText.contains("device admin apps") ||
+                                allText.contains("device admin app") ||
+                                allText.contains("device administrators") ||
+                                allText.contains("device administrator") ||
+                                allText.contains("device management") ||
+                                allText.contains("ডিভাইস অ্যাডমিন") ||
+                                allText.contains("ডিভাইস ম্যানেজার") ||
+                                allText.contains("enforce password requirements") ||
+                                allText.contains("other security policies") ||
+                                allText.contains("employers often use device admin") ||
+                                (allText.contains("device admin") && allText.contains("reclaim")) ||
+                                (allText.contains("reclaim") && (allText.contains("deactivate") || allText.contains("active") || allText.contains("cancel"))) ||
+                                allWindowTitles.any { t ->
+                                    t == "reclaim" || t.contains("device admin") || t.contains("device administrator") || t.contains("ডিভাইস অ্যাডমিন")
+                                }
+
+                            if (isReclaimDeactivateScreen) {
+                                Log.d("AccessibilityService", "BLOCKED: Device Admin screen. className=$className")
+                                triggerIntervention(
+                                    target = "Device Admin Protected",
+                                    ruleType = RuleType.APP,
+                                    category = BlockCategory.CUSTOM,
+                                    reason = "Deactivating Device Administrator is blocked while Uninstall Protection or Accountability is active.",
+                                    appPackage = packageName,
+                                    bypassCooldown = true
+                                )
+                                return@launch
+                            }
+
+                            // 2. Software Information / Developer Options page
+                            val isSoftwareInfoScreen =
+                                className.contains("softwareinfo") ||
+                                className.contains("developmentsettings") ||
+                                className.contains("softwareinformation") ||
+                                className.contains("buildnumber") ||
+                                allText.contains("software information") ||
+                                allText.contains("software info") ||
+                                allText.contains("developer option") ||
+                                allText.contains("developer setting") ||
+                                allText.contains("development setting") ||
+                                allText.contains("build number") ||
+                                allText.contains("বিল্ড নম্বর") ||
+                                allText.contains("সফটওয়্যার তথ্য") ||
+                                allText.contains("সফটওয়্যার ইনফো") ||
+                                allText.contains("ডেভেলপার অপশন") ||
+                                allText.contains("one ui version") ||
+                                allText.contains("kernel version") ||
+                                allWindowTitles.any { t ->
+                                    t == "software information" || t == "software info" ||
+                                    t == "developer options" || t == "developer settings" ||
+                                    t.contains("software information") || t.contains("software info") ||
+                                    t.contains("developer option") || t.contains("developer setting") ||
+                                    t.contains("সফটওয়্যার") || t.contains("ডেভেলপার")
+                                }
+
+                            if (isSoftwareInfoScreen) {
+                                Log.d("AccessibilityService", "BLOCKED: Software Info/Dev Options. className=$className")
+                                triggerIntervention(
+                                    target = "Developer Options Blocked",
+                                    ruleType = RuleType.APP,
+                                    category = BlockCategory.CUSTOM,
+                                    reason = "Accessing Software Information or Developer Options is blocked while Prevent Uninstall or Accountability Lock is active.",
+                                    appPackage = packageName,
+                                    bypassCooldown = true
+                                )
+                                return@launch
+                            }
+
+                            // 3. Delayed re-check for Samsung as views settle
+                            if (eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) {
+                                val capturedPkg = packageName
+                                serviceScope.launch {
+                                    delay(200L)
+                                    try {
+                                        val delayedPrefs = SelfControlApp.repository.preferences
+                                        val delayedCanEnforce = delayedPrefs.cachedUninstallProtection ||
+                                            delayedPrefs.cachedAccountabilityEnabled ||
+                                            SelfControlApp.repository.getActiveSession() != null ||
+                                            SelfControlApp.repository.getActiveFocusSchedule() != null ||
+                                            isDeviceAdminActiveCached ||
+                                            com.example.util.PermissionHelper.isDeviceAdminActive(this@SelfControlAccessibilityService)
+                                        if (!delayedCanEnforce) return@launch
+                                        if (InterventionActivity.isShowing) return@launch
+
+                                        val delayedRoot = try { rootInActiveWindow } catch (_: Throwable) { null }
+                                        val delayedText = delayedRoot?.let { collectQuickWindowText(it) }?.lowercase() ?: ""
+                                        val delayedWinTitles = try {
+                                            windows?.mapNotNull { w ->
+                                                w?.title?.toString()?.trim()?.lowercase()
+                                            } ?: emptyList()
+                                        } catch (_: Throwable) { emptyList() }
+                                        val delayedAll = (delayedText + " " + delayedWinTitles.joinToString(" ")).lowercase()
+
+                                        val isDelayedDevAdmin =
+                                            delayedAll.contains("this admin app is active") ||
+                                            delayedAll.contains("device admin apps") ||
+                                            delayedAll.contains("device administrator") ||
+                                            delayedAll.contains("allows reclaim to perform") ||
+                                            delayedAll.contains("ডিভাইস অ্যাডমিন") ||
+                                            delayedAll.contains("enforce password requirements") ||
+                                            (delayedAll.contains("device admin") && delayedAll.contains("reclaim")) ||
+                                            delayedWinTitles.any { t -> t == "reclaim" || t.contains("device admin") }
+
+                                        if (isDelayedDevAdmin) {
+                                            Log.d("AccessibilityService", "BLOCKED (delayed): Device Admin.")
+                                            triggerIntervention(
+                                                target = "Device Admin Protected",
+                                                ruleType = RuleType.APP,
+                                                category = BlockCategory.CUSTOM,
+                                                reason = "Deactivating Device Administrator is blocked while Uninstall Protection or Accountability is active.",
+                                                appPackage = capturedPkg,
+                                                bypassCooldown = true
+                                            )
+                                            return@launch
+                                        }
+
+                                        val isDelayedSoftwareInfo = delayedAll.contains("software information") ||
+                                            delayedAll.contains("software info") ||
+                                            delayedAll.contains("developer option") ||
+                                            delayedAll.contains("build number") ||
+                                            delayedAll.contains("বিল্ড নম্বর") ||
+                                            delayedAll.contains("সফটওয়্যার") ||
+                                            delayedAll.contains("one ui version") ||
+                                            delayedWinTitles.any { t ->
+                                                t == "software information" || t.contains("software information") ||
+                                                t == "developer options" || t.contains("developer option") ||
+                                                t.contains("সফটওয়্যার")
+                                            }
+                                        if (isDelayedSoftwareInfo) {
+                                            Log.d("AccessibilityService", "BLOCKED (delayed): Software Info.")
+                                            triggerIntervention(
+                                                target = "Developer Options Blocked",
+                                                ruleType = RuleType.APP,
+                                                category = BlockCategory.CUSTOM,
+                                                reason = "Accessing Software Information or Developer Options is blocked.",
+                                                appPackage = capturedPkg,
+                                                bypassCooldown = true
+                                            )
+                                        }
+                                    } catch (_: Throwable) {}
+                                }
+                            }
+                        }
+                    }
+                }
+
                 // Fast-path: Catch direct taps on "Images", "Videos", "Short videos" tabs in Chrome/Google App,
                 // Google Lens / Picture Scan / Camera Search, or "Install" button in Play Store when blocked
                 if (eventType == AccessibilityEvent.TYPE_VIEW_CLICKED ||
@@ -365,26 +537,135 @@ class SelfControlAccessibilityService : AccessibilityService() {
             if (childTxt.isNotBlank()) combinedLabels.add(childTxt)
         }
 
-        // 1B. If Prevent Uninstall is enabled and user tries to tap "Uninstall" in Play Store or Galaxy Store on Reclaim
+        // 1B. If Prevent Uninstall is enabled and user tries to tap "Uninstall" or "Update" in Play Store or Galaxy Store on Reclaim
         if ((packageName == "com.android.vending" || packageName == "com.sec.android.app.samsungapps") &&
-            prefs.cachedUninstallProtection && com.example.util.PermissionHelper.isDeviceAdminActive(this)
+            prefs.cachedUninstallProtection
         ) {
             val isClickingUninstall = combinedLabels.any { lbl ->
                 val l = lbl.lowercase().trim()
                 l == "uninstall" || l.startsWith("uninstall ")
             }
-            if (isClickingUninstall) {
+            val isClickingUpdate = combinedLabels.any { lbl ->
+                val l = lbl.lowercase().trim()
+                l == "update" || l == "install" || l == "enable" ||
+                l.startsWith("update ") || l.startsWith("install ")
+            }
+            if (isClickingUninstall || isClickingUpdate) {
                 val isReclaim = try {
                     val root = rootInActiveWindow ?: eventSource
                     val txt = root?.let { collectQuickWindowText(it) }?.lowercase() ?: ""
                     txt.contains("reclaim") || txt.contains("healinglab") || txt.contains("copsli")
                 } catch (_: Throwable) { false }
                 if (isReclaim) {
+                    val target = if (isClickingUninstall) "Uninstall Protection" else "Update/Reinstall Blocked"
+                    val reason = if (isClickingUninstall)
+                        "Uninstalling Reclaim is locked while Prevent Uninstall is active."
+                    else
+                        "Updating or reinstalling Reclaim is blocked while Prevent Uninstall is active. Disable Prevent Uninstall first."
                     triggerIntervention(
-                        target = "Uninstall Protection",
+                        target = target,
                         ruleType = RuleType.APP,
                         category = BlockCategory.CUSTOM,
-                        reason = "Uninstalling Reclaim is locked while Prevent Uninstall is active.",
+                        reason = reason,
+                        appPackage = packageName,
+                        bypassCooldown = true
+                    )
+                    return true
+                }
+            }
+        }
+
+        // 1C. Intercept taps on Developer Options, Build Number, Software Info, or Device Admin deactivation in Settings
+        val isSettings = isSettingsOrAccessibilityPkg(packageName)
+        val isUninstallActive = prefs.cachedUninstallProtection
+        val isAccActive = prefs.cachedAccountabilityEnabled || SelfControlApp.repository.getActiveSession() != null || SelfControlApp.repository.getActiveFocusSchedule() != null
+        val isRealAdmin = isDeviceAdminActiveCached || com.example.util.PermissionHelper.isDeviceAdminActive(this@SelfControlAccessibilityService)
+        val canEnforceTamper = isUninstallActive || isAccActive || isRealAdmin
+
+        if (isSettings && canEnforceTamper) {
+            val vId = eventSource?.viewIdResourceName?.lowercase() ?: ""
+            // Also scan the parent node text to get more context (Samsung sometimes puts label on parent)
+            val parentText = try {
+                eventSource?.parent?.let { p ->
+                    val t = p.text?.toString()?.trim()?.lowercase() ?: ""
+                    val d = p.contentDescription?.toString()?.trim()?.lowercase() ?: ""
+                    "$t $d"
+                } ?: ""
+            } catch (_: Throwable) { "" }
+            val allClickLabels = (combinedLabels.joinToString(" ") + " " + parentText).lowercase()
+
+            val isDevTap = combinedLabels.any { lbl ->
+                val l = lbl.lowercase().trim()
+                l == "build number" || l.contains("build number") ||
+                l == "software information" || l == "software info" ||
+                l == "developer options" || l == "developer settings" ||
+                l == "usb debugging" || l == "wireless debugging" ||
+                l == "বিল্ড নম্বর" || l == "সফটওয়্যার তথ্য" || l == "সফটওয়্যার ইনফো" ||
+                l.contains("developer mode") || l.contains("developer option") ||
+                l.contains("developer setting")
+            } || vId.contains("build_number") || vId.contains("software_info") || vId.contains("development_settings") ||
+               vId.contains("developer_options") || allClickLabels.contains("build number") ||
+               allClickLabels.contains("software information") || allClickLabels.contains("developer option")
+
+            if (isDevTap) {
+                Log.d("AccessibilityService", "CLICK-BLOCKED: Dev Options/Software Info tap. labels=$combinedLabels vId=$vId")
+                triggerIntervention(
+                    target = "Developer Options Blocked",
+                    ruleType = RuleType.APP,
+                    category = BlockCategory.CUSTOM,
+                    reason = "Accessing or enabling Developer Options and USB Debugging is blocked while Prevent Uninstall or Accountability Lock is active.",
+                    appPackage = packageName,
+                    bypassCooldown = true
+                )
+                return true
+            }
+
+            // User request: "block device manager setting completely"
+            // Intercept the tap on "Device admin apps" row (before navigation) AND any deactivate button
+            val isDeviceManagerTap = combinedLabels.any { lbl ->
+                val l = lbl.lowercase().trim()
+                l.contains("device admin") || l.contains("device administrator") ||
+                l.contains("device management") || l.contains("device manager") ||
+                l.contains("ডিভাইস অ্যাডমিন") || l.contains("ডিভাইস ম্যানেজার") ||
+                l == "deactivate" || l.contains("deactivate this") || l == "নিষ্ক্রিয়"
+            } || vId.contains("device_admin") || vId.contains("deactivate") ||
+               allClickLabels.contains("device admin") || allClickLabels.contains("device administrator") ||
+               allClickLabels.contains("deactivate")
+
+            if (isDeviceManagerTap) {
+                Log.d("AccessibilityService", "CLICK-BLOCKED: Device Admin tap. labels=$combinedLabels vId=$vId")
+                triggerIntervention(
+                    target = "Device Admin Protected",
+                    ruleType = RuleType.APP,
+                    category = BlockCategory.CUSTOM,
+                    reason = "Accessing or modifying Device Administrator settings is completely blocked while Uninstall Protection or Accountability is active.",
+                    appPackage = packageName,
+                    bypassCooldown = true
+                )
+                return true
+            }
+
+            // User request: "block reclaim instaltion via file manager (not other apps)"
+            val isInstallTap = combinedLabels.any { lbl ->
+                val l = lbl.lowercase().trim()
+                l == "install" || l == "update" || l == "reinstall" || l == "replace" ||
+                l.startsWith("install ") || l.startsWith("update ") ||
+                l == "ইনস্টল" || l == "আপডেট"
+            }
+            if (isInstallTap) {
+                val isReclaim = try {
+                    val root = rootInActiveWindow ?: eventSource
+                    val txt = root?.let { collectQuickWindowText(it) }?.lowercase() ?: ""
+                    txt.contains("reclaim") || txt.contains("healinglab") || txt.contains("copsli") ||
+                    txt.contains("com.example") || txt.contains("digital self-control") ||
+                    txt.contains("selfcontrol")
+                } catch (_: Throwable) { false }
+                if (isReclaim) {
+                    triggerIntervention(
+                        target = "Update/Reinstall Blocked",
+                        ruleType = RuleType.APP,
+                        category = BlockCategory.CUSTOM,
+                        reason = "Updating, reinstalling, or downgrading Reclaim is blocked while Prevent Uninstall is active. Disable Prevent Uninstall first.",
                         appPackage = packageName,
                         bypassCooldown = true
                     )
@@ -570,11 +851,52 @@ class SelfControlAccessibilityService : AccessibilityService() {
         val isAccountabilityLocked = isAccEnabled || isFocusMode
         val isAccountabilityActive = isAccEnabled || isFocusMode
         val isRealDeviceAdminActive = com.example.util.PermissionHelper.isDeviceAdminActive(this)
-        val isUninstallProtection = prefs.cachedUninstallProtection && isRealDeviceAdminActive
+        val isUninstallProtection = prefs.cachedUninstallProtection
+
+        // 0A. Block updating / downgrading / reinstalling Reclaim via Package Installer, File Manager, Browser, etc.
+        // Runs whenever Uninstall Protection is active, independent of whether "Block New Apps" is enabled!
+        if (isUninstallProtection) {
+            val rootNode = try { rootInActiveWindow ?: eventSource } catch (_: Throwable) { eventSource }
+            if (rootNode != null) {
+                val txt = collectQuickWindowText(rootNode).lowercase()
+                val isReclaimTarget = txt.contains("reclaim") ||
+                        txt.contains("healinglab") ||
+                        txt.contains("copsli") ||
+                        txt.contains("com.healinglab.reclaim.app") ||
+                        txt.contains("com.example") ||
+                        txt.contains("digital self-control") ||
+                        txt.contains("selfcontrol")
+                val isInstallAction = txt.contains("install") ||
+                        txt.contains("update") ||
+                        txt.contains("replace") ||
+                        txt.contains("downgrade") ||
+                        txt.contains("do you want to install") ||
+                        txt.contains("want to update") ||
+                        txt.contains("existing app") ||
+                        txt.contains("existing application") ||
+                        txt.contains("app will be replaced") ||
+                        txt.contains("version of this app") ||
+                        txt.contains("ইনস্টল") ||
+                        txt.contains("আপডেট")
+                val isUninstalling = txt.contains("do you want to uninstall") || txt.contains("delete this app")
+                if (isReclaimTarget && isInstallAction && !isUninstalling) {
+                    Log.d("AccessibilityService", "BLOCKED: Attempt to update/downgrade/reinstall Reclaim")
+                    triggerIntervention(
+                        target = "Update/Reinstall Blocked",
+                        ruleType = RuleType.APP,
+                        category = BlockCategory.CUSTOM,
+                        reason = "Updating, reinstalling, or downgrading Reclaim is blocked while Prevent Uninstall is active. Disable Prevent Uninstall first.",
+                        appPackage = packageName,
+                        bypassCooldown = true
+                    )
+                    return
+                }
+            }
+        }
 
         // Check Settings for Accessibility Tampering, Force Stop, Permission Tampering, Developer Options or Uninstall Attempt
-        // ONLY when Prevent Uninstall or Accountability Lock is active. When both are disabled, let the user freely access settings/uninstall.
-        if (isSettings && (isUninstallProtection || isAccountabilityLocked)) {
+        // ONLY when Prevent Uninstall, Accountability Lock, or Device Admin is active. When all are disabled, let the user freely access settings/uninstall.
+        if (isSettings && (isUninstallProtection || isAccountabilityLocked || isRealDeviceAdminActive)) {
             val rootNode = try { rootInActiveWindow ?: eventSource } catch (_: Throwable) { eventSource }
             if (rootNode != null) {
                 val blocked = inspectNodeForUninstall(
@@ -582,7 +904,8 @@ class SelfControlAccessibilityService : AccessibilityService() {
                     packageName = packageName,
                     isUninstallProtection = isUninstallProtection,
                     isAccountabilityLocked = isAccountabilityLocked,
-                    isAccountabilityEnabled = isAccEnabled
+                    isAccountabilityEnabled = isAccEnabled,
+                    isDeviceAdmin = isRealDeviceAdminActive
                 )
                 if (blocked) return
             }
@@ -672,9 +995,14 @@ class SelfControlAccessibilityService : AccessibilityService() {
         if (isNewAppsBlocked) {
             prefs.ensureNewAppsBaselineInitialized()
 
-            // 1A. Check Package Installers for Uninstall attempts targeting Reclaim (installation itself is allowed)
+            // 1A. Check Package Installers and File Managers for Uninstall or Update/Downgrade/Reinstall attempts targeting Reclaim
             val isApkInstallerPkg = PACKAGE_INSTALLER_PACKAGES.contains(packageName) ||
-                    packageName.contains("packageinstaller", ignoreCase = true)
+                    packageName.contains("packageinstaller", ignoreCase = true) ||
+                    packageName.contains("file", ignoreCase = true) ||
+                    packageName.contains("myfiles", ignoreCase = true) ||
+                    packageName.contains("explorer", ignoreCase = true) ||
+                    packageName.contains("documentsui", ignoreCase = true) ||
+                    packageName.contains("nbu.files", ignoreCase = true)
             if (isApkInstallerPkg) {
                 val r = try { rootInActiveWindow ?: eventSource } catch (_: Throwable) { null }
                 val txt = r?.let { collectQuickWindowText(it) }?.lowercase() ?: ""
@@ -690,7 +1018,42 @@ class SelfControlAccessibilityService : AccessibilityService() {
                         )
                     }
                 }
-                // Do NOT block installation process itself. Let installation finish cleanly so newly installed app is blocked when opened.
+
+                // 1A-2. Block update/downgrade/reinstall of Reclaim when Prevent Uninstall is active
+                if (isUninstallProtection) {
+                    val isReclaimTarget = txt.contains("reclaim") ||
+                            txt.contains("healinglab") ||
+                            txt.contains("copsli") ||
+                            txt.contains("com.healinglab.reclaim.app") ||
+                            txt.contains("com.example") ||
+                            txt.contains("digital self-control") ||
+                            txt.contains("selfcontrol")
+                    val isInstallAction = txt.contains("install") ||
+                            txt.contains("update") ||
+                            txt.contains("replace") ||
+                            txt.contains("downgrade") ||
+                            txt.contains("do you want to install") ||
+                            txt.contains("want to update") ||
+                            txt.contains("an existing app") ||
+                            txt.contains("existing application") ||
+                            txt.contains("replace the current") ||
+                            txt.contains("app will be replaced") ||
+                            txt.contains("version of this app") ||
+                            txt.contains("ইনস্টল") ||
+                            txt.contains("আপডেট")
+                    if (isReclaimTarget && isInstallAction && !isUninstalling) {
+                        Log.d("AccessibilityService", "BLOCKED: Attempt to update/downgrade/reinstall Reclaim via package installer")
+                        triggerIntervention(
+                            target = "Update/Reinstall Blocked",
+                            ruleType = RuleType.APP,
+                            category = BlockCategory.CUSTOM,
+                            reason = "Updating, downgrading, or reinstalling Reclaim is blocked while Prevent Uninstall is active. Disable Prevent Uninstall first.",
+                            appPackage = packageName,
+                            bypassCooldown = true
+                        )
+                        return
+                    }
+                }
             }
 
             // 1B. Check if this opened app was newly installed (from Play Store or from an APK file) while the block is enabled
@@ -1220,7 +1583,7 @@ class SelfControlAccessibilityService : AccessibilityService() {
         val queue = ArrayDeque<AccessibilityNodeInfo>()
         queue.add(root)
         var count = 0
-        while (queue.isNotEmpty() && count < 80) {
+        while (queue.isNotEmpty() && count < 400) {
             val n = queue.removeFirst()
             count++
             n.text?.let { if (it.isNotBlank()) sb.append(" ").append(it) }
@@ -1237,9 +1600,11 @@ class SelfControlAccessibilityService : AccessibilityService() {
         packageName: String,
         isUninstallProtection: Boolean,
         isAccountabilityLocked: Boolean = false,
-        isAccountabilityEnabled: Boolean = false
+        isAccountabilityEnabled: Boolean = false,
+        isDeviceAdmin: Boolean = false
     ): Boolean {
-        if (!isUninstallProtection && !isAccountabilityLocked && !isAccountabilityEnabled) {
+        val effectiveAdmin = isDeviceAdmin || isDeviceAdminActiveCached || com.example.util.PermissionHelper.isDeviceAdminActive(this)
+        if (!isUninstallProtection && !isAccountabilityLocked && !isAccountabilityEnabled && !effectiveAdmin) {
             return false
         }
 
@@ -1296,7 +1661,7 @@ class SelfControlAccessibilityService : AccessibilityService() {
             var firstHeaderTitle: String? = null
             var count = 0
 
-            while (nodesToInspect.isNotEmpty() && count < 350) {
+            while (nodesToInspect.isNotEmpty() && count < 500) {
                 val node = nodesToInspect.removeFirst()
                 count++
 
@@ -1354,8 +1719,94 @@ class SelfControlAccessibilityService : AccessibilityService() {
                 windowTextBuilder.append(" reclaim_accessibility_detail_page ")
             }
 
+            val lowerCollectedText = windowTextBuilder.toString().lowercase()
+            // Exactly like how accessibility detail page is recognized:
+            // If the page mentions Reclaim and has deactivation controls/text, flag it so detail page is 100% recognized!
+            if ((firstHeaderTitle?.contains("reclaim") == true || lowerCollectedText.contains("reclaim")) &&
+                (lowerCollectedText.contains("deactivate") || lowerCollectedText.contains("this admin app is active") || lowerCollectedText.contains("admin app is active") || lowerCollectedText.contains("allows reclaim"))
+            ) {
+                windowViewIdsBuilder.append(" device_admin ")
+                windowTextBuilder.append(" reclaim_device_admin_detail_page ")
+            }
+
             val windowText = windowTextBuilder.toString()
             val windowViewIds = windowViewIdsBuilder.toString()
+            val lowerWText = windowText.lowercase()
+            val lowerWIds = windowViewIds.lowercase()
+
+            // Direct check for Device Admin target (double layer: list page + detail page)
+            val isDeviceAdminTarget = (
+                lowerWText.contains("reclaim_device_admin_detail_page") ||
+                lowerWText.contains("this admin app is active") ||
+                lowerWText.contains("allows reclaim to perform") ||
+                lowerWText.contains("admin app is active") ||
+                (lowerWText.contains("reclaim") && lowerWText.contains("deactivate")) ||
+                (lowerWText.contains("this admin app is active") && lowerWText.contains("deactivate")) ||
+                (lowerWText.contains("this admin app is active") && lowerWText.contains("cancel")) ||
+                lowerWText.contains("device admin apps") ||
+                lowerWText.contains("device admin app") ||
+                lowerWText.contains("device administrators") ||
+                lowerWText.contains("device administrator") ||
+                lowerWText.contains("ডিভাইস অ্যাডমিন") ||
+                lowerWText.contains("ডিভাইস ম্যানেজার") ||
+                lowerWText.contains("enforce password requirements") ||
+                lowerWText.contains("other security policies") ||
+                lowerWText.contains("employers often use device admin") ||
+                (lowerWText.contains("device admin") && lowerWText.contains("reclaim")) ||
+                lowerWIds.contains("device_admin")
+            )
+
+            // Direct check for Software Information target (user request: "block going to software information page")
+            val isSoftwareInfoTarget = (
+                lowerWText.contains("software information") ||
+                lowerWText.contains("software info") ||
+                lowerWText.contains("সফটওয়্যার তথ্য") ||
+                lowerWText.contains("সফটওয়্যার ইনফো") ||
+                lowerWText.contains("build number") ||
+                lowerWText.contains("বিল্ড নম্বর") ||
+                lowerWText.contains("one ui version") ||
+                lowerWText.contains("kernel version") ||
+                lowerWIds.contains("software_info") ||
+                lowerWIds.contains("software_information") ||
+                lowerWIds.contains("build_number")
+            )
+
+            if (isDeviceAdminTarget) {
+                try {
+                    var clickable = cancelNode
+                    while (clickable != null && !clickable.safeIsClickable()) {
+                        clickable = clickable.parent
+                    }
+                    clickable?.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                } catch (_: Throwable) {}
+
+                triggerIntervention(
+                    target = "Device Admin Protected",
+                    ruleType = RuleType.APP,
+                    category = BlockCategory.CUSTOM,
+                    reason = "Deactivating Device Administrator is blocked while Uninstall Protection or Accountability is active.",
+                    appPackage = packageName,
+                    bypassCooldown = true
+                )
+                return true
+            }
+
+            if (isSoftwareInfoTarget) {
+                triggerIntervention(
+                    target = "Developer Options Blocked",
+                    ruleType = RuleType.APP,
+                    category = BlockCategory.CUSTOM,
+                    reason = "Accessing Software Information is blocked while Prevent Uninstall or Accountability Lock is active.",
+                    appPackage = packageName,
+                    bypassCooldown = true
+                )
+                return true
+            }
+
+            // Debug: log collected text for Samsung troubleshooting (remove once confirmed working)
+            if (isUninstallProtection && (windowText.lowercase().contains("admin") || windowText.lowercase().contains("reclaim") || windowText.lowercase().contains("build") || windowText.lowercase().contains("software") || windowText.lowercase().contains("about"))) {
+                android.util.Log.d("AccessibilityService", "DEBUG inspectNode text=[${windowText.take(500)}] viewIds=[${windowViewIds.take(300)}]")
+            }
 
             val eval = RuleEngine.evaluateUninstallAttempt(
                 packageName = packageName,
@@ -1363,7 +1814,7 @@ class SelfControlAccessibilityService : AccessibilityService() {
                 viewText = windowText,
                 viewId = windowViewIds,
                 isUninstallProtectionEnabled = isUninstallProtection,
-                isDeviceAdminActive = com.example.util.PermissionHelper.isDeviceAdminActive(this),
+                isDeviceAdminActive = effectiveAdmin,
                 isAccountabilityLocked = isAccountabilityLocked,
                 isAccountabilityEnabled = isAccountabilityEnabled
             )
@@ -1376,11 +1827,6 @@ class SelfControlAccessibilityService : AccessibilityService() {
                         clickable = clickable.parent
                     }
                     clickable?.performAction(AccessibilityNodeInfo.ACTION_CLICK)
-                } catch (_: Throwable) {}
-
-                // 2. Perform GLOBAL_ACTION_BACK to immediately exit the blocked screen or dialog
-                try {
-                    performGlobalAction(GLOBAL_ACTION_BACK)
                 } catch (_: Throwable) {}
 
                 val blockTarget = when {
@@ -2170,8 +2616,6 @@ class SelfControlAccessibilityService : AccessibilityService() {
     override fun onInterrupt() {}
 
     override fun onDestroy() {
-        modestyScreenScanner?.stop()
-        modestyOverlayManager?.clearOverlay()
         maintenanceJob?.cancel()
         try {
             packageInstallReceiver?.let { unregisterReceiver(it) }

@@ -43,7 +43,11 @@ object PermissionHelper {
     fun isDeviceAdminActive(context: Context): Boolean {
         val dpm = context.getSystemService(Context.DEVICE_POLICY_SERVICE) as? DevicePolicyManager ?: return false
         val adminComponent = ComponentName(context, SelfControlDeviceAdminReceiver::class.java)
-        return dpm.isAdminActive(adminComponent)
+        val active = dpm.isAdminActive(adminComponent)
+        try {
+            com.example.service.accessibility.SelfControlAccessibilityService.isDeviceAdminActiveCached = active
+        } catch (_: Throwable) {}
+        return active
     }
 
     fun removeDeviceAdmin(context: Context): Boolean {
@@ -228,4 +232,45 @@ object PermissionHelper {
             }
         }
     }
+
+    /**
+     * Returns true if the app is already exempt from battery optimizations.
+     */
+    fun isBatteryOptimizationExempt(context: Context): Boolean {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            val pm = context.getSystemService(Context.POWER_SERVICE) as? android.os.PowerManager
+            return pm?.isIgnoringBatteryOptimizations(context.packageName) == true
+        }
+        return true // Pre-Marshmallow doesn't have Doze
+    }
+
+    /**
+     * Requests battery optimization exemption via system dialog.
+     * Critical for Samsung devices with aggressive battery savers that kill
+     * the app process and revoke Device Admin when swiped from recents.
+     */
+    @android.annotation.SuppressLint("BatteryLife")
+    fun requestBatteryOptimizationExemption(context: Context) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && !isBatteryOptimizationExempt(context)) {
+            try {
+                val intent = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
+                    data = Uri.parse("package:${context.packageName}")
+                    if (context !is android.app.Activity) {
+                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    }
+                }
+                context.startActivity(intent)
+            } catch (e: Exception) {
+                Log.w(TAG, "Failed to request battery optimization exemption: ${e.message}")
+                // Fallback: open battery optimization settings list
+                try {
+                    val fallback = Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS).apply {
+                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    }
+                    context.startActivity(fallback)
+                } catch (_: Exception) {}
+            }
+        }
+    }
 }
+
