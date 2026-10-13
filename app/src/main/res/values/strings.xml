@@ -17,4 +17,5 @@
     <string name="status_active">Protection active</string>
     <string name="status_partial">Protection partially active</string>
     <string name="status_inactive">Protection inactive</string>
+    <string name="device_admin_description">Keeps Reclaim active during your self-control sessions.</string>
 </resources>

@@ -3,8 +3,12 @@ package com.example.service.receiver
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.net.VpnService
+import android.util.Log
 import com.example.SelfControlApp
+import com.example.service.accessibility.SelfControlAccessibilityService
 import com.example.service.vpn.SelfControlVpnService
+import com.example.util.PermissionHelper
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
@@ -13,13 +17,45 @@ import kotlinx.coroutines.launch
 class BootCompletedReceiver : BroadcastReceiver() {
 
     override fun onReceive(context: Context, intent: Intent) {
-        if (intent.action == Intent.ACTION_BOOT_COMPLETED || intent.action == "android.intent.action.QUICKBOOT_POWERON") {
+        val action = intent.action ?: return
+        if (action == Intent.ACTION_BOOT_COMPLETED ||
+            action == Intent.ACTION_LOCKED_BOOT_COMPLETED ||
+            action == Intent.ACTION_USER_UNLOCKED ||
+            action == Intent.ACTION_MY_PACKAGE_REPLACED ||
+            action == "android.intent.action.QUICKBOOT_POWERON" ||
+            action == "com.htc.intent.action.QUICKBOOT_POWERON"
+        ) {
+            val pendingResult = goAsync()
             CoroutineScope(Dispatchers.IO).launch {
-                val masterProtection = SelfControlApp.repository.preferences.masterProtection.first()
-                val vpnEnabled = SelfControlApp.repository.preferences.vpnEnabled.first()
+                try {
+                    SelfControlAccessibilityService.isDeviceAdminActiveCached =
+                        PermissionHelper.isDeviceAdminActive(context)
+                    val prefs = SelfControlApp.repository.preferences
+                    prefs.startDataStoreCollectionIfUnlocked()
+                    prefs.checkAndExpireUninstallProtection()
 
-                if (masterProtection && vpnEnabled) {
-                    SelfControlVpnService.startVpn(context)
+                    val masterProtection = try {
+                        prefs.masterProtection.first()
+                    } catch (_: Throwable) {
+                        prefs.cachedMasterProtection
+                    }
+                    val vpnEnabled = try {
+                        prefs.vpnEnabled.first()
+                    } catch (_: Throwable) {
+                        prefs.cachedVpnEnabled
+                    }
+
+                    if (masterProtection && vpnEnabled && !SelfControlVpnService.isRunning) {
+                        if (VpnService.prepare(context) == null) {
+                            SelfControlVpnService.startVpn(context)
+                        }
+                    }
+                } catch (e: Throwable) {
+                    Log.w("BootCompletedReceiver", "Autostart on boot error: ${e.message}")
+                } finally {
+                    try {
+                        pendingResult.finish()
+                    } catch (_: Throwable) {}
                 }
             }
         }

@@ -1,11 +1,13 @@
 package com.example.ui.components
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
@@ -32,6 +34,7 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -375,100 +378,107 @@ fun UninstallProtectionDeviceAdminDialog(
     onOpenSettings: () -> Unit,
     onDismiss: () -> Unit
 ) {
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        modifier = Modifier.testTag("device_admin_info_dialog"),
-        icon = {
-            Box(
-                modifier = Modifier
-                    .size(56.dp)
-                    .clip(CircleShape)
-                    .background(Color(0xFFFEF2F2)),
-                contentAlignment = Alignment.Center
-            ) {
-                Icon(
-                    imageVector = Icons.Default.Shield,
-                    contentDescription = "Device Admin",
-                    tint = Color(0xFFDC2626),
-                    modifier = Modifier.size(28.dp)
-                )
-            }
-        },
-        title = {
-            Text(
-                text = "Device Admin Required",
-                fontSize = 20.sp,
-                fontWeight = FontWeight.Bold,
-                color = DarkText,
-                textAlign = TextAlign.Center,
-                modifier = Modifier.fillMaxWidth()
+    androidx.compose.runtime.DisposableEffect(Unit) {
+        com.example.MainActivity.isUninstallPopupVisible = true
+        onDispose {
+            com.example.MainActivity.isUninstallPopupVisible = false
+        }
+    }
+
+    androidx.activity.compose.BackHandler(onBack = onDismiss)
+
+    val scrimInteraction = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }
+    val cardInteraction = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }
+
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color.Black.copy(alpha = 0.45f))
+            .clickable(
+                interactionSource = scrimInteraction,
+                indication = null,
+                onClick = onDismiss
             )
-        },
-        text = {
-            Column(
-                modifier = Modifier.fillMaxWidth(),
-                verticalArrangement = Arrangement.spacedBy(12.dp)
-            ) {
-                Text(
-                    text = "Uninstall Protection requires Android Device Administrator permission so Reclaim cannot be uninstalled or removed during moments of impulse.",
-                    fontSize = 14.sp,
-                    color = MutedText,
-                    lineHeight = 20.sp
+            .padding(24.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        Card(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clickable(
+                    interactionSource = cardInteraction,
+                    indication = null,
+                    onClick = {}
                 )
-                Card(
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(14.dp),
-                    colors = CardDefaults.cardColors(containerColor = Color(0xFFF9FAFB))
+                .testTag("device_admin_info_dialog"),
+            shape = RoundedCornerShape(24.dp),
+            colors = CardDefaults.cardColors(containerColor = Color.White),
+            elevation = CardDefaults.cardElevation(defaultElevation = 12.dp)
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(24.dp),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(52.dp)
+                        .clip(CircleShape)
+                        .background(Color(0xFFFEF2F2)),
+                    contentAlignment = Alignment.Center
                 ) {
-                    Column(
-                        modifier = Modifier.padding(14.dp),
-                        verticalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        Text(
-                            text = "What to do to turn on:",
-                            fontSize = 13.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = DarkText
-                        )
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Text("1. ", fontWeight = FontWeight.Bold, fontSize = 12.sp, color = PrimaryGreen)
-                            Text("Tap 'Open Device Admin' below", fontSize = 12.sp, color = DarkText)
-                        }
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Text("2. ", fontWeight = FontWeight.Bold, fontSize = 12.sp, color = PrimaryGreen)
-                            Text("Select 'Reclaim' in Device admin apps", fontSize = 12.sp, color = DarkText)
-                        }
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Text("3. ", fontWeight = FontWeight.Bold, fontSize = 12.sp, color = PrimaryGreen)
-                            Text("Tap 'Activate this device admin app'", fontSize = 12.sp, color = DarkText)
-                        }
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Text("4. ", fontWeight = FontWeight.Bold, fontSize = 12.sp, color = PrimaryGreen)
-                            Text("Return here to turn on Uninstall Protection", fontSize = 12.sp, color = DarkText)
-                        }
-                    }
+                    Icon(
+                        imageVector = Icons.Default.Shield,
+                        contentDescription = null,
+                        tint = Color(0xFFDC2626),
+                        modifier = Modifier.size(26.dp)
+                    )
+                }
+
+                Spacer(modifier = Modifier.height(14.dp))
+
+                Text(
+                    text = "Permission Required",
+                    fontSize = 19.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = DarkText,
+                    textAlign = TextAlign.Center
+                )
+
+                Spacer(modifier = Modifier.height(8.dp))
+
+                Text(
+                    text = "Please enable the system protection permission on the next screen, then return here to start your lock timer.",
+                    fontSize = 13.sp,
+                    color = MutedText,
+                    lineHeight = 19.sp,
+                    textAlign = TextAlign.Center
+                )
+
+                Spacer(modifier = Modifier.height(20.dp))
+
+                Button(
+                    onClick = onOpenSettings,
+                    colors = ButtonDefaults.buttonColors(containerColor = PrimaryGreen),
+                    shape = RoundedCornerShape(12.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(48.dp)
+                        .testTag("open_device_admin_settings_button")
+                ) {
+                    Text("Continue to Settings", fontWeight = FontWeight.SemiBold)
+                }
+
+                Spacer(modifier = Modifier.height(6.dp))
+
+                TextButton(
+                    onClick = onDismiss,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text("Close", color = SubtleText)
                 }
             }
-        },
-        confirmButton = {
-            Button(
-                onClick = onOpenSettings,
-                colors = ButtonDefaults.buttonColors(containerColor = PrimaryGreen),
-                shape = RoundedCornerShape(12.dp),
-                modifier = Modifier.fillMaxWidth().testTag("open_device_admin_settings_button")
-            ) {
-                Text("Open Device Admin Settings", fontWeight = FontWeight.SemiBold)
-            }
-        },
-        dismissButton = {
-            TextButton(
-                onClick = onDismiss,
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Text("Cancel", color = SubtleText)
-            }
-        },
-        containerColor = Color.White,
-        shape = RoundedCornerShape(24.dp)
-    )
+        }
+    }
 }

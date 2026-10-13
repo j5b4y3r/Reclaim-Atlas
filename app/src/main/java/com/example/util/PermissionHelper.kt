@@ -18,6 +18,26 @@ object PermissionHelper {
 
     private const val TAG = "PermissionHelper"
 
+    @Volatile
+    var lastAdminActivationRequestMs: Long = 0L
+
+    @Volatile
+    var lastAppInitiatedAdminRemovalMs: Long = 0L
+
+    fun isActivatingAdminFromApp(windowMs: Long = 45_000L): Boolean {
+        val elapsed = android.os.SystemClock.uptimeMillis() - lastAdminActivationRequestMs
+        return lastAdminActivationRequestMs > 0L && elapsed in 0L..windowMs
+    }
+
+    fun isRemovingAdminFromApp(windowMs: Long = 5_000L): Boolean {
+        val elapsed = android.os.SystemClock.uptimeMillis() - lastAppInitiatedAdminRemovalMs
+        return lastAppInitiatedAdminRemovalMs > 0L && elapsed in 0L..windowMs
+    }
+
+    fun clearAdminActivationRequest() {
+        lastAdminActivationRequestMs = 0L
+    }
+
     fun isAccessibilityEnabled(context: Context): Boolean {
         if (SelfControlAccessibilityService.isRunning) return true
 
@@ -52,6 +72,7 @@ object PermissionHelper {
 
     fun removeDeviceAdmin(context: Context): Boolean {
         return try {
+            lastAppInitiatedAdminRemovalMs = android.os.SystemClock.uptimeMillis()
             val dpm = context.getSystemService(Context.DEVICE_POLICY_SERVICE) as? DevicePolicyManager ?: return false
             val adminComponent = ComponentName(context, SelfControlDeviceAdminReceiver::class.java)
             if (dpm.isAdminActive(adminComponent)) {
@@ -85,6 +106,7 @@ object PermissionHelper {
     }
 
     fun getDeviceAdminIntent(context: Context): Intent {
+        lastAdminActivationRequestMs = android.os.SystemClock.uptimeMillis()
         val adminComponent = ComponentName(context, SelfControlDeviceAdminReceiver::class.java)
         return Intent(DevicePolicyManager.ACTION_ADD_DEVICE_ADMIN).apply {
             putExtra(DevicePolicyManager.EXTRA_DEVICE_ADMIN, adminComponent)
@@ -102,6 +124,7 @@ object PermissionHelper {
      * Reliably opens the Device Admin activation prompt or settings screen across all Android versions and OEM skins.
      */
     fun openDeviceAdminSettings(context: Context) {
+        lastAdminActivationRequestMs = android.os.SystemClock.uptimeMillis()
         val adminComponent = ComponentName(context, SelfControlDeviceAdminReceiver::class.java)
 
         // Attempt 1: Direct ACTION_ADD_DEVICE_ADMIN prompt

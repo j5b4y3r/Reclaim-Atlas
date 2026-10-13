@@ -85,10 +85,49 @@ data class BottomNavItem(
 
 class MainActivity : ComponentActivity() {
 
+    companion object {
+        @Volatile
+        var isForeground: Boolean = false
+            private set
+
+        @Volatile
+        var isUninstallPopupVisible: Boolean = false
+    }
+
     private val viewModel: MainViewModel by viewModels()
+
+    override fun onStart() {
+        super.onStart()
+        isForeground = true
+    }
+
+    override fun onResume() {
+        super.onResume()
+        isForeground = true
+    }
+
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        if (hasFocus) {
+            isForeground = true
+        }
+    }
+
+    override fun onPause() {
+        isForeground = false
+        isUninstallPopupVisible = false
+        super.onPause()
+    }
+
+    override fun onStop() {
+        isForeground = false
+        isUninstallPopupVisible = false
+        super.onStop()
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        isForeground = true
         enableEdgeToEdge()
         val insetsController = androidx.core.view.WindowCompat.getInsetsController(window, window.decorView)
         insetsController.isAppearanceLightStatusBars = true

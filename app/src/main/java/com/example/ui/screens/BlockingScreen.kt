@@ -115,24 +115,31 @@ fun BlockingScreen(
                 isDeviceAdminActive = active
                 if (active && waitingForAdminGrant) {
                     waitingForAdminGrant = false
+                    com.example.MainActivity.isUninstallPopupVisible = true
                     showUninstallConfigSheet = true
                 }
             }
         }
         lifecycleOwner.lifecycle.addObserver(observer)
         onDispose {
+            com.example.MainActivity.isUninstallPopupVisible = false
             lifecycleOwner.lifecycle.removeObserver(observer)
         }
     }
 
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(AppBackground)
-            .verticalScroll(rememberScrollState())
-            .padding(horizontal = 24.dp, vertical = 24.dp)
-            .testTag("blocking_screen")
-    ) {
+    LaunchedEffect(showUninstallConfigSheet, showDeviceAdminPopup) {
+        com.example.MainActivity.isUninstallPopupVisible = showUninstallConfigSheet || showDeviceAdminPopup
+    }
+
+    Box(modifier = Modifier.fillMaxSize()) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(AppBackground)
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = 24.dp, vertical = 24.dp)
+                .testTag("blocking_screen")
+        ) {
         // Header with (?) Help
         Row(
             modifier = Modifier.fillMaxWidth(),
@@ -443,6 +450,7 @@ fun BlockingScreen(
                         if (willEnable) {
                             val active = PermissionHelper.isDeviceAdminActive(context)
                             isDeviceAdminActive = active
+                            com.example.MainActivity.isUninstallPopupVisible = true
                             if (!active) {
                                 // Ask user permission first if Device Admin is not granted!
                                 showDeviceAdminPopup = true
@@ -493,40 +501,49 @@ fun BlockingScreen(
         }
 
         Spacer(modifier = Modifier.height(24.dp))
-    }
+        }
 
-    if (showUninstallConfigSheet) {
-        UninstallProtectionConfigBottomSheet(
-            isDeviceAdminActive = isDeviceAdminActive,
-            initialDays = uninstallProtectionDurationDays.coerceAtLeast(1),
-            onConfirm = { durationDays ->
-                showUninstallConfigSheet = false
-                val active = PermissionHelper.isDeviceAdminActive(context)
-                isDeviceAdminActive = active
-                if (!active) {
-                    showDeviceAdminPopup = true
-                } else {
-                    viewModel.activateUninstallProtection(durationDays)
+        if (showUninstallConfigSheet) {
+            UninstallProtectionConfigBottomSheet(
+                isDeviceAdminActive = isDeviceAdminActive,
+                initialDays = uninstallProtectionDurationDays.coerceAtLeast(1),
+                onConfirm = { durationDays ->
+                    showUninstallConfigSheet = false
+                    val active = PermissionHelper.isDeviceAdminActive(context)
+                    isDeviceAdminActive = active
+                    if (!active) {
+                        pendingAdminDays = durationDays
+                        com.example.MainActivity.isUninstallPopupVisible = true
+                        showDeviceAdminPopup = true
+                    } else {
+                        com.example.MainActivity.isUninstallPopupVisible = false
+                        PermissionHelper.clearAdminActivationRequest()
+                        com.example.service.receiver.SelfControlDeviceAdminReceiver.lastAdminEnabledTimeMs = 0L
+                        viewModel.activateUninstallProtection(durationDays)
+                    }
+                },
+                onDismiss = {
+                    com.example.MainActivity.isUninstallPopupVisible = false
+                    showUninstallConfigSheet = false
                 }
-            },
-            onDismiss = {
-                showUninstallConfigSheet = false
-            }
-        )
-    }
+            )
+        }
 
-    if (showDeviceAdminPopup) {
-        UninstallProtectionDeviceAdminDialog(
-            onOpenSettings = {
-                showDeviceAdminPopup = false
-                waitingForAdminGrant = true
-                PermissionHelper.openDeviceAdminSettings(context)
-            },
-            onDismiss = {
-                showDeviceAdminPopup = false
-                waitingForAdminGrant = false
-            }
-        )
+        if (showDeviceAdminPopup) {
+            UninstallProtectionDeviceAdminDialog(
+                onOpenSettings = {
+                    com.example.MainActivity.isUninstallPopupVisible = false
+                    showDeviceAdminPopup = false
+                    waitingForAdminGrant = true
+                    PermissionHelper.openDeviceAdminSettings(context)
+                },
+                onDismiss = {
+                    com.example.MainActivity.isUninstallPopupVisible = false
+                    showDeviceAdminPopup = false
+                    waitingForAdminGrant = false
+                }
+            )
+        }
     }
 }
 

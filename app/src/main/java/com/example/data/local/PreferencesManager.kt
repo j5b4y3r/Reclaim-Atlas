@@ -140,11 +140,37 @@ class PreferencesManager(private val context: Context) {
 
     private val cacheScope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO + kotlinx.coroutines.SupervisorJob())
 
-    private val syncPrefs = context.getSharedPreferences("block_screen_sync_cache", android.content.Context.MODE_PRIVATE)
+    private val deviceProtectedPrefs: android.content.SharedPreferences? = try {
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.N) {
+            context.createDeviceProtectedStorageContext()
+                .getSharedPreferences("block_screen_sync_cache", android.content.Context.MODE_PRIVATE)
+        } else null
+    } catch (_: Throwable) {
+        null
+    }
 
-    @Volatile var cachedMasterProtection: Boolean = true
+    private val syncPrefs: android.content.SharedPreferences
+        get() {
+            return try {
+                val um = context.getSystemService(android.content.Context.USER_SERVICE) as? android.os.UserManager
+                val isUnlocked = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.N) {
+                    um?.isUserUnlocked != false
+                } else true
+                if (isUnlocked) {
+                    context.getSharedPreferences("block_screen_sync_cache", android.content.Context.MODE_PRIVATE)
+                } else {
+                    deviceProtectedPrefs ?: context.createDeviceProtectedStorageContext()
+                        .getSharedPreferences("block_screen_sync_cache", android.content.Context.MODE_PRIVATE)
+                }
+            } catch (_: Throwable) {
+                deviceProtectedPrefs ?: context.createDeviceProtectedStorageContext()
+                    .getSharedPreferences("block_screen_sync_cache", android.content.Context.MODE_PRIVATE)
+            }
+        }
+
+    @Volatile var cachedMasterProtection: Boolean = syncPrefs.getBoolean("master_protection", true)
         private set
-    @Volatile var cachedVpnEnabled: Boolean = true
+    @Volatile var cachedVpnEnabled: Boolean = syncPrefs.getBoolean("vpn_enabled", true)
         private set
     @Volatile var cachedAccessibilityEnabled: Boolean = true
         private set
@@ -219,8 +245,21 @@ class PreferencesManager(private val context: Context) {
     @Volatile var cachedPersistentBlockScreen: Boolean = syncPrefs.getBoolean("persistent_block_screen", true)
         private set
 
+    private var dataStoreCollectorJob: kotlinx.coroutines.Job? = null
+
     init {
-        cacheScope.launch {
+        startDataStoreCollectionIfUnlocked()
+    }
+
+    fun startDataStoreCollectionIfUnlocked() {
+        val um = context.getSystemService(android.content.Context.USER_SERVICE) as? android.os.UserManager
+        val isUnlocked = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.N) {
+            um?.isUserUnlocked != false
+        } else true
+        if (!isUnlocked) return
+        if (dataStoreCollectorJob?.isActive == true) return
+
+        dataStoreCollectorJob = cacheScope.launch {
             try {
                 context.dataStore.data.collect { prefs ->
                     cachedMasterProtection = prefs[KEY_MASTER_PROTECTION] ?: true
@@ -289,25 +328,33 @@ class PreferencesManager(private val context: Context) {
                     cachedBlockScreenShowTimer = timVis
                     cachedBlockScreenShowTagline = tagVis
 
-                    syncPrefs.edit()
-                        .putString("bg_type", bg)
-                        .putString("media_path", path)
-                        .putString("media_list", serializeMediaList(list))
-                        .putBoolean("dark_overlay", darkOverlay)
-                        .putBoolean("video_muted", muted)
-                        .putString("title", title)
-                        .putString("subtitle", subtitle)
-                        .putString("button_text", btn)
-                        .putString("alignment", align)
-                        .putBoolean("show_streak", streak)
-                        .putBoolean("show_lock", lock)
-                        .putBoolean("show_title", tVis)
-                        .putBoolean("show_subtitle", subVis)
-                        .putBoolean("show_button", btnVis)
-                        .putBoolean("show_speaker", spkVis)
-                        .putBoolean("show_timer", timVis)
-                        .putBoolean("show_tagline", tagVis)
-                        .apply()
+                    val applySync: (android.content.SharedPreferences) -> Unit = { targetPrefs ->
+                        targetPrefs.edit()
+                            .putBoolean("master_protection", cachedMasterProtection)
+                            .putBoolean("vpn_enabled", cachedVpnEnabled)
+                            .putBoolean("uninstall_protection", cachedUninstallProtection)
+                            .putLong("uninstall_protection_until", cachedUninstallProtectionUntil)
+                            .putString("bg_type", bg)
+                            .putString("media_path", path)
+                            .putString("media_list", serializeMediaList(list))
+                            .putBoolean("dark_overlay", darkOverlay)
+                            .putBoolean("video_muted", muted)
+                            .putString("title", title)
+                            .putString("subtitle", subtitle)
+                            .putString("button_text", btn)
+                            .putString("alignment", align)
+                            .putBoolean("show_streak", streak)
+                            .putBoolean("show_lock", lock)
+                            .putBoolean("show_title", tVis)
+                            .putBoolean("show_subtitle", subVis)
+                            .putBoolean("show_button", btnVis)
+                            .putBoolean("show_speaker", spkVis)
+                            .putBoolean("show_timer", timVis)
+                            .putBoolean("show_tagline", tagVis)
+                            .apply()
+                    }
+                    try { applySync(syncPrefs) } catch (_: Throwable) {}
+                    try { deviceProtectedPrefs?.let { applySync(it) } } catch (_: Throwable) {}
                 }
             } catch (_: Throwable) {}
         }
@@ -692,7 +739,36 @@ class PreferencesManager(private val context: Context) {
         context.dataStore.edit { it[KEY_FACEBOOK_REELS_BLOCKED] = blocked }
     }
 
-    suspend fun setUninstallProtectionConfig(enabled: Boolean, durationDays: Int = 1) {
+    fun isUninstallProtectionActiveFast(): Boolean {
+        val now = System.currentTimeMillis()
+        if (cachedUninstallProtection) {
+            val until = cachedUninstallProtectionUntil
+            if (until == 0L || until > now) {
+                return true
+            }
+        }
+        try {
+            val enabled = syncPrefs.getBoolean("uninstall_protection", false)
+            val until = syncPrefs.getLong("uninstall_protection_until", 0L)
+            if (enabled && (until == 0L || until > now)) {
+                cachedUninstallProtection = true
+                cachedUninstallProtectionUntil = until
+                return true
+            }
+        } catch (_: Throwable) {}
+        try {
+            val dpEnabled = deviceProtectedPrefs?.getBoolean("uninstall_protection", false) ?: false
+            val dpUntil = deviceProtectedPrefs?.getLong("uninstall_protection_until", 0L) ?: 0L
+            if (dpEnabled && (dpUntil == 0L || dpUntil > now)) {
+                cachedUninstallProtection = true
+                cachedUninstallProtectionUntil = dpUntil
+                return true
+            }
+        } catch (_: Throwable) {}
+        return false
+    }
+
+    fun setUninstallProtectionConfigSync(enabled: Boolean, durationDays: Int = 1): Long {
         val safeDays = durationDays.coerceAtLeast(1)
         val untilTime = if (enabled) {
             System.currentTimeMillis() + (safeDays.toLong() * 24L * 60L * 60L * 1000L)
@@ -701,13 +777,34 @@ class PreferencesManager(private val context: Context) {
         }
         cachedUninstallProtection = enabled
         cachedUninstallProtectionUntil = untilTime
+        try {
+            syncPrefs.edit()
+                .putBoolean("uninstall_protection", enabled)
+                .putLong("uninstall_protection_until", untilTime)
+                .apply()
+        } catch (_: Throwable) {}
+        try {
+            deviceProtectedPrefs?.edit()
+                ?.putBoolean("uninstall_protection", enabled)
+                ?.putLong("uninstall_protection_until", untilTime)
+                ?.apply()
+        } catch (_: Throwable) {}
+        try {
+            context.getSharedPreferences("selfcontrol_sync_prefs", android.content.Context.MODE_PRIVATE)
+                .edit()
+                .putBoolean("uninstall_protection", enabled)
+                .putLong("uninstall_protection_until", untilTime)
+                .apply()
+        } catch (_: Throwable) {}
+        return untilTime
+    }
+
+    suspend fun setUninstallProtectionConfig(enabled: Boolean, durationDays: Int = 1) {
+        val safeDays = durationDays.coerceAtLeast(1)
+        val untilTime = setUninstallProtectionConfigSync(enabled, safeDays)
         if (!enabled) {
             com.example.util.PermissionHelper.removeDeviceAdmin(context)
         }
-        syncPrefs.edit()
-            .putBoolean("uninstall_protection", enabled)
-            .putLong("uninstall_protection_until", untilTime)
-            .apply()
 
         context.dataStore.edit {
             it[KEY_UNINSTALL_PROTECTION] = enabled
@@ -734,6 +831,18 @@ class PreferencesManager(private val context: Context) {
             val currentUntil = context.dataStore.data.map { it[KEY_UNINSTALL_PROTECTION_UNTIL] ?: 0L }.first()
             val currentDays = context.dataStore.data.map { it[KEY_UNINSTALL_PROTECTION_DURATION_DAYS] ?: 1 }.first()
             if (currentUntil > System.currentTimeMillis()) {
+                cachedUninstallProtection = true
+                cachedUninstallProtectionUntil = currentUntil
+                syncPrefs.edit()
+                    .putBoolean("uninstall_protection", true)
+                    .putLong("uninstall_protection_until", currentUntil)
+                    .apply()
+                try {
+                    deviceProtectedPrefs?.edit()
+                        ?.putBoolean("uninstall_protection", true)
+                        ?.putLong("uninstall_protection_until", currentUntil)
+                        ?.apply()
+                } catch (_: Throwable) {}
                 context.dataStore.edit { it[KEY_UNINSTALL_PROTECTION] = true }
             } else {
                 setUninstallProtectionConfig(true, currentDays.coerceAtLeast(1))

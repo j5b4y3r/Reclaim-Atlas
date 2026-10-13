@@ -112,18 +112,22 @@ class InterventionActivity : ComponentActivity() {
             bypassCooldown: Boolean = false
         ) {
             val now = android.os.SystemClock.uptimeMillis()
-            if (isShowing && !bypassCooldown) {
-                return
-            }
-            if (isShowing && now - lastStartTime < 1000L) {
-                return
-            }
-            if (!bypassCooldown && isInDismissCooldown(packageName)) {
-                return
-            }
-            val minInterval = if (bypassCooldown) 500L else 800L
-            if (minInterval > 0L && now - lastStartTime < minInterval) {
-                return
+            if (!bypassCooldown) {
+                if (isShowing) {
+                    return
+                }
+                if (isInDismissCooldown(packageName)) {
+                    return
+                }
+                if (now - lastStartTime < 800L) {
+                    return
+                }
+            } else {
+                // For high-priority security/tamper blocks (bypassCooldown = true),
+                // only debounce ultra-rapid duplicate calls within 60ms while already focused.
+                if (isShowing && now - lastStartTime < 60L) {
+                    return
+                }
             }
             lastStartTime = now
 
@@ -141,6 +145,11 @@ class InterventionActivity : ComponentActivity() {
                     Intent.FLAG_ACTIVITY_NO_ANIMATION
                 )
             }
+            val launchCtx = if (context is android.app.Activity) {
+                context
+            } else {
+                com.example.service.accessibility.SelfControlAccessibilityService.instance ?: context
+            }
             try {
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
                     try {
@@ -148,12 +157,12 @@ class InterventionActivity : ComponentActivity() {
                         options.setPendingIntentBackgroundActivityStartMode(
                             android.app.ActivityOptions.MODE_BACKGROUND_ACTIVITY_START_ALLOWED
                         )
-                        context.startActivity(intent, options.toBundle())
+                        launchCtx.startActivity(intent, options.toBundle())
                     } catch (_: Throwable) {
-                        context.startActivity(intent)
+                        launchCtx.startActivity(intent)
                     }
                 } else {
-                    context.startActivity(intent)
+                    launchCtx.startActivity(intent)
                 }
             } catch (e: Exception) {
                 isShowing = false
@@ -178,14 +187,12 @@ class InterventionActivity : ComponentActivity() {
 
     override fun onPause() {
         super.onPause()
-        // Do NOT set isShowing = false here; activity is still visible during transitions or dialogs
+        isShowing = false
     }
 
     override fun onWindowFocusChanged(hasFocus: Boolean) {
         super.onWindowFocusChanged(hasFocus)
-        if (hasFocus) {
-            isShowing = true
-        }
+        isShowing = hasFocus
     }
 
     override fun onUserLeaveHint() {

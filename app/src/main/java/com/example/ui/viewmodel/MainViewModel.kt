@@ -746,6 +746,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun activateUninstallProtection(durationDays: Int) {
+        prefs.setUninstallProtectionConfigSync(enabled = true, durationDays = durationDays)
         viewModelScope.launch {
             prefs.setUninstallProtectionConfig(enabled = true, durationDays = durationDays)
             repository.clearPartnerRequestForAction("ADV_UNINSTALL_PROTECTION")
@@ -776,6 +777,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             return false
         }
 
+        prefs.setUninstallProtectionConfigSync(enabled = false, durationDays = 1)
         viewModelScope.launch {
             prefs.setUninstallProtectionConfig(enabled = false, durationDays = 1)
         }
@@ -784,6 +786,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun setUninstallProtection(enabled: Boolean, durationDays: Int = 1) {
         if (enabled) {
+            prefs.setUninstallProtectionConfigSync(enabled = true, durationDays = durationDays)
             viewModelScope.launch {
                 prefs.setUninstallProtectionConfig(enabled = true, durationDays = durationDays)
                 repository.clearPartnerRequestForAction("ADV_UNINSTALL_PROTECTION")

@@ -85,6 +85,9 @@ class SelfControlRepository(
     private var cachedSchedules: List<FocusSchedule>? = null
 
     @Volatile
+    private var cachedActiveSession: FocusSession? = null
+
+    @Volatile
     private var cachedEnabledRules: List<BlockRule> = emptyList()
 
     @Volatile
@@ -120,6 +123,17 @@ class SelfControlRepository(
                 }
             } catch (e: Throwable) {
                 Log.e(tag, "Failed to collect focus schedules", e)
+            }
+        }
+
+        // Keep active focus session cached in memory for instant zero-latency accessibility evaluation
+        scope.launch {
+            try {
+                sessionDao.observeActiveSession().collect { session ->
+                    cachedActiveSession = session
+                }
+            } catch (e: Throwable) {
+                Log.e(tag, "Failed to collect active focus session", e)
             }
         }
 
@@ -521,7 +535,11 @@ class SelfControlRepository(
 
     fun observeActiveSession(): Flow<FocusSession?> = sessionDao.observeActiveSession()
 
-    suspend fun getActiveSession(): FocusSession? = sessionDao.getActiveSession()
+    fun getActiveSessionFast(): FocusSession? = cachedActiveSession
+
+    fun isFocusModeActiveFast(): Boolean = cachedActiveSession != null || getActiveFocusScheduleFast() != null
+
+    suspend fun getActiveSession(): FocusSession? = cachedActiveSession ?: sessionDao.getActiveSession().also { cachedActiveSession = it }
 
     suspend fun startFocusSession(targetMinutes: Int): Long {
         val session = FocusSession(
@@ -531,11 +549,13 @@ class SelfControlRepository(
             isCompleted = false
         )
         val id = sessionDao.insertSession(session)
+        cachedActiveSession = session.copy(id = id)
         triggerCloudSyncDebounced()
         return id
     }
 
     suspend fun completeFocusSession(sessionId: Long, completedMinutes: Int) {
+        cachedActiveSession = null
         val session = sessionDao.getSessionById(sessionId)
         if (session != null) {
             val updated = session.copy(
@@ -549,6 +569,7 @@ class SelfControlRepository(
     }
 
     suspend fun cancelFocusSession(sessionId: Long, completedMinutes: Int) {
+        cachedActiveSession = null
         val session = sessionDao.getSessionById(sessionId)
         if (session != null) {
             val updated = session.copy(
@@ -652,12 +673,21 @@ class SelfControlRepository(
         triggerCloudSyncDebounced()
     }
 
+    fun getActiveFocusScheduleFast(currentTimeMillis: Long = System.currentTimeMillis()): FocusSchedule? {
+        val schedules = cachedSchedules ?: return null
+        return evaluateActiveScheduleFromList(schedules, currentTimeMillis)
+    }
+
     suspend fun getActiveFocusSchedule(currentTimeMillis: Long = System.currentTimeMillis()): FocusSchedule? {
         val schedules = cachedSchedules ?: try {
             focusScheduleDao.getAllSchedulesSync().also { cachedSchedules = it }
         } catch (_: Throwable) {
             emptyList()
         }
+        return evaluateActiveScheduleFromList(schedules, currentTimeMillis)
+    }
+
+    private fun evaluateActiveScheduleFromList(schedules: List<FocusSchedule>, currentTimeMillis: Long): FocusSchedule? {
         val enabledSchedules = schedules.filter { it.isEnabled }
         if (enabledSchedules.isEmpty()) return null
 

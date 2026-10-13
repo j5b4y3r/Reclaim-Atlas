@@ -73,14 +73,57 @@ class SelfControlApp : Application() {
         val preferences = PreferencesManager(this)
         repository = SelfControlRepository(this, database, preferences)
 
-        // Initialize 3-layer AdultBlockingEngine (loads 500k+ local DB + Room adult_domains)
-        com.example.domain.engine.AdultBlockingEngine.initialize(this, database.adultDomainDao())
-
-        // Ensure baseline installed packages are initialized if Block New App Installs is active
-        kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO).launch {
+        val initAfterUnlock = {
             try {
-                preferences.ensureNewAppsBaselineInitialized()
-            } catch (_: Exception) {}
+                preferences.startDataStoreCollectionIfUnlocked()
+                // Initialize 3-layer AdultBlockingEngine (loads 500k+ local DB + Room adult_domains)
+                com.example.domain.engine.AdultBlockingEngine.initialize(this, database.adultDomainDao())
+
+                // Ensure baseline installed packages are initialized if Block New App Installs is active
+                CoroutineScope(Dispatchers.IO).launch {
+                    try {
+                        preferences.ensureNewAppsBaselineInitialized()
+                        preferences.checkAndExpireUninstallProtection()
+                        if (preferences.cachedMasterProtection &&
+                            preferences.cachedVpnEnabled &&
+                            !com.example.service.vpn.SelfControlVpnService.isRunning
+                        ) {
+                            if (android.net.VpnService.prepare(this@SelfControlApp) == null) {
+                                com.example.service.vpn.SelfControlVpnService.startVpn(this@SelfControlApp)
+                            }
+                        }
+                    } catch (_: Throwable) {}
+                }
+            } catch (_: Throwable) {}
+        }
+
+        val userManager = getSystemService(USER_SERVICE) as? android.os.UserManager
+        val isUserUnlocked = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+            userManager?.isUserUnlocked != false
+        } else true
+
+        if (isUserUnlocked) {
+            initAfterUnlock()
+        } else {
+            // Device is in Direct Boot (before first unlock after restart); wait for user unlock
+            try {
+                val unlockReceiver = object : android.content.BroadcastReceiver() {
+                    override fun onReceive(ctx: android.content.Context?, intent: Intent?) {
+                        if (intent?.action == Intent.ACTION_USER_UNLOCKED) {
+                            initAfterUnlock()
+                            try {
+                                unregisterReceiver(this)
+                            } catch (_: Throwable) {}
+                        }
+                    }
+                }
+                val unlockFilter = IntentFilter(Intent.ACTION_USER_UNLOCKED)
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                    registerReceiver(unlockReceiver, unlockFilter, RECEIVER_NOT_EXPORTED)
+                } else {
+                    registerReceiver(unlockReceiver, unlockFilter)
+                }
+            } catch (_: Throwable) {}
         }
 
         // Dynamically register PackageInstallReceiver so ACTION_PACKAGE_ADDED is never missed on Android 8+

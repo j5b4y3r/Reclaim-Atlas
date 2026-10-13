@@ -1,15 +1,16 @@
 package com.example.ui.components
 
-import android.content.Context
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
@@ -22,13 +23,9 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.CalendarMonth
-import androidx.compose.material.icons.filled.CheckCircle
-import androidx.compose.material.icons.filled.Info
-import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.RadioButtonChecked
 import androidx.compose.material.icons.filled.RadioButtonUnchecked
 import androidx.compose.material.icons.filled.Remove
-import androidx.compose.material.icons.filled.Security
 import androidx.compose.material.icons.filled.Shield
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -36,15 +33,13 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CheckboxDefaults
-import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
-import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.SheetState
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -54,30 +49,26 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.example.MainActivity
 import com.example.ui.theme.AppBackground
-import com.example.ui.theme.CardSurface
 import com.example.ui.theme.DarkText
 import com.example.ui.theme.MutedText
 import com.example.ui.theme.PrimaryGreen
 import com.example.ui.theme.PrimaryGreenLight
-import com.example.ui.theme.PrimaryGreenPill
 import com.example.ui.theme.SubtleText
 import java.text.SimpleDateFormat
 import java.util.Calendar
-import java.util.Date
 import java.util.Locale
 
 /**
- * Modern bottom sheet to configure Uninstall & Tamper Protection timerange / lock duration
- * with 24 Hours vs Custom Days, agreement rules checkmark, and seamless Device Admin activation.
+ * In-window bottom sheet overlay to configure Lock Duration (24 Hours vs Custom Days).
+ * Rendered directly inside MainActivity's Compose hierarchy (without spawning a separate OS DialogWindow)
+ * and stripped of bulky texts so Samsung One UI / Android 13 Accessibility never confuses it with Settings.
  */
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun UninstallProtectionConfigBottomSheet(
     isDeviceAdminActive: Boolean,
@@ -85,27 +76,54 @@ fun UninstallProtectionConfigBottomSheet(
     onConfirm: (durationDays: Int) -> Unit,
     onDismiss: () -> Unit
 ) {
-    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    DisposableEffect(Unit) {
+        MainActivity.isUninstallPopupVisible = true
+        onDispose {
+            MainActivity.isUninstallPopupVisible = false
+        }
+    }
 
-    ModalBottomSheet(
-        onDismissRequest = onDismiss,
-        sheetState = sheetState,
-        containerColor = Color.White,
-        shape = RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp),
-        dragHandle = null
+    BackHandler(onBack = onDismiss)
+
+    val scrimInteraction = remember { MutableInteractionSource() }
+    val sheetInteraction = remember { MutableInteractionSource() }
+
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color.Black.copy(alpha = 0.45f))
+            .clickable(
+                interactionSource = scrimInteraction,
+                indication = null,
+                onClick = onDismiss
+            ),
+        contentAlignment = Alignment.BottomCenter
     ) {
-        UninstallProtectionConfigContent(
-            isDeviceAdminActive = isDeviceAdminActive,
-            initialDays = initialDays,
-            onConfirm = onConfirm,
-            onCancel = onDismiss
-        )
+        Surface(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clickable(
+                    interactionSource = sheetInteraction,
+                    indication = null,
+                    onClick = {}
+                ),
+            color = Color.White,
+            shape = RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp),
+            shadowElevation = 16.dp
+        ) {
+            UninstallProtectionConfigContent(
+                isDeviceAdminActive = isDeviceAdminActive,
+                initialDays = initialDays,
+                onConfirm = onConfirm,
+                onCancel = onDismiss
+            )
+        }
     }
 }
 
 @Composable
 fun UninstallProtectionConfigContent(
-    isDeviceAdminActive: Boolean,
+    @Suppress("UNUSED_PARAMETER") isDeviceAdminActive: Boolean,
     initialDays: Int = 1,
     onConfirm: (durationDays: Int) -> Unit,
     onCancel: () -> Unit
@@ -128,7 +146,7 @@ fun UninstallProtectionConfigContent(
         modifier = Modifier
             .fillMaxWidth()
             .verticalScroll(rememberScrollState())
-            .padding(horizontal = 24.dp, vertical = 24.dp)
+            .padding(horizontal = 24.dp, vertical = 20.dp)
             .testTag("uninstall_protection_config_sheet")
     ) {
         // Drag Indicator bar
@@ -140,16 +158,16 @@ fun UninstallProtectionConfigContent(
                 .background(Color(0xFFE2E8F0))
         )
 
-        Spacer(modifier = Modifier.height(20.dp))
+        Spacer(modifier = Modifier.height(16.dp))
 
-        // Header with Shield Icon
+        // Compact Header with Shield Icon
         Row(
             verticalAlignment = Alignment.CenterVertically,
             modifier = Modifier.fillMaxWidth()
         ) {
             Box(
                 modifier = Modifier
-                    .size(48.dp)
+                    .size(44.dp)
                     .clip(CircleShape)
                     .background(PrimaryGreen.copy(alpha = 0.12f)),
                 contentAlignment = Alignment.Center
@@ -158,27 +176,27 @@ fun UninstallProtectionConfigContent(
                     imageVector = Icons.Default.Shield,
                     contentDescription = null,
                     tint = PrimaryGreen,
-                    modifier = Modifier.size(26.dp)
+                    modifier = Modifier.size(24.dp)
                 )
             }
-            Spacer(modifier = Modifier.width(14.dp))
+            Spacer(modifier = Modifier.width(12.dp))
             Column {
                 Text(
-                    text = "Activate Uninstall Protection",
-                    fontSize = 20.sp,
+                    text = "Configure Lock Timer",
+                    fontSize = 19.sp,
                     fontWeight = FontWeight.Bold,
                     color = DarkText,
                     letterSpacing = (-0.3).sp
                 )
                 Text(
-                    text = "Lock down protection against impulsive bypasses",
+                    text = "Select how long this commitment stays active",
                     fontSize = 12.sp,
                     color = MutedText
                 )
             }
         }
 
-        Spacer(modifier = Modifier.height(20.dp))
+        Spacer(modifier = Modifier.height(16.dp))
 
         // Duration / Time Range Selection Block
         Card(
@@ -187,7 +205,7 @@ fun UninstallProtectionConfigContent(
             colors = CardDefaults.cardColors(containerColor = AppBackground),
             border = BorderStroke(1.dp, Color(0xFFE2E8F0))
         ) {
-            Column(modifier = Modifier.padding(18.dp)) {
+            Column(modifier = Modifier.padding(16.dp)) {
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.SpaceBetween,
@@ -195,7 +213,7 @@ fun UninstallProtectionConfigContent(
                 ) {
                     Text(
                         text = "Lock Duration",
-                        fontSize = 17.sp,
+                        fontSize = 16.sp,
                         fontWeight = FontWeight.Bold,
                         color = DarkText
                     )
@@ -214,7 +232,7 @@ fun UninstallProtectionConfigContent(
                     }
                 }
 
-                Spacer(modifier = Modifier.height(14.dp))
+                Spacer(modifier = Modifier.height(12.dp))
 
                 // Option 1: 24 Hours (1 Day)
                 Card(
@@ -234,7 +252,7 @@ fun UninstallProtectionConfigContent(
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(horizontal = 14.dp, vertical = 12.dp),
+                            .padding(horizontal = 14.dp, vertical = 10.dp),
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.SpaceBetween
                     ) {
@@ -249,13 +267,13 @@ fun UninstallProtectionConfigContent(
                             Column {
                                 Text(
                                     text = "24 Hours (1 Day)",
-                                    fontSize = 15.sp,
+                                    fontSize = 14.sp,
                                     fontWeight = FontWeight.SemiBold,
                                     color = DarkText
                                 )
                                 Text(
-                                    text = "Standard 1-day lock timerange",
-                                    fontSize = 12.sp,
+                                    text = "Standard 1-day commitment",
+                                    fontSize = 11.sp,
                                     color = MutedText
                                 )
                             }
@@ -263,7 +281,7 @@ fun UninstallProtectionConfigContent(
                     }
                 }
 
-                Spacer(modifier = Modifier.height(10.dp))
+                Spacer(modifier = Modifier.height(8.dp))
 
                 // Option 2: Custom Days
                 Card(
@@ -283,7 +301,7 @@ fun UninstallProtectionConfigContent(
                     Column(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(horizontal = 14.dp, vertical = 12.dp)
+                            .padding(horizontal = 14.dp, vertical = 10.dp)
                     ) {
                         Row(
                             modifier = Modifier.fillMaxWidth(),
@@ -301,13 +319,13 @@ fun UninstallProtectionConfigContent(
                                 Column {
                                     Text(
                                         text = "Custom Duration (in Days)",
-                                        fontSize = 15.sp,
+                                        fontSize = 14.sp,
                                         fontWeight = FontWeight.SemiBold,
                                         color = DarkText
                                     )
                                     Text(
-                                        text = "Choose multi-day lock commitment",
-                                        fontSize = 12.sp,
+                                        text = "Choose multi-day commitment",
+                                        fontSize = 11.sp,
                                         color = MutedText
                                     )
                                 }
@@ -315,7 +333,7 @@ fun UninstallProtectionConfigContent(
                         }
 
                         if (!isOneDaySelected) {
-                            Spacer(modifier = Modifier.height(14.dp))
+                            Spacer(modifier = Modifier.height(12.dp))
 
                             // Preset Pills
                             val presets = listOf(3, 7, 14, 30)
@@ -344,7 +362,7 @@ fun UninstallProtectionConfigContent(
                                 }
                             }
 
-                            Spacer(modifier = Modifier.height(12.dp))
+                            Spacer(modifier = Modifier.height(10.dp))
 
                             // Stepper Control
                             Row(
@@ -352,7 +370,7 @@ fun UninstallProtectionConfigContent(
                                     .fillMaxWidth()
                                     .clip(RoundedCornerShape(12.dp))
                                     .background(Color(0xFFF3F4F6))
-                                    .padding(horizontal = 12.dp, vertical = 6.dp),
+                                    .padding(horizontal = 12.dp, vertical = 4.dp),
                                 verticalAlignment = Alignment.CenterVertically,
                                 horizontalArrangement = Arrangement.SpaceBetween
                             ) {
@@ -369,7 +387,7 @@ fun UninstallProtectionConfigContent(
 
                                 Text(
                                     text = "$customDays Days",
-                                    fontSize = 16.sp,
+                                    fontSize = 15.sp,
                                     fontWeight = FontWeight.Bold,
                                     color = DarkText
                                 )
@@ -389,7 +407,7 @@ fun UninstallProtectionConfigContent(
                     }
                 }
 
-                Spacer(modifier = Modifier.height(14.dp))
+                Spacer(modifier = Modifier.height(12.dp))
 
                 // Calculated Date Card
                 Card(
@@ -399,14 +417,14 @@ fun UninstallProtectionConfigContent(
                     border = BorderStroke(1.dp, PrimaryGreen.copy(alpha = 0.3f))
                 ) {
                     Row(
-                        modifier = Modifier.padding(12.dp),
+                        modifier = Modifier.padding(10.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Icon(
                             imageVector = Icons.Default.CalendarMonth,
                             contentDescription = null,
                             tint = PrimaryGreen,
-                            modifier = Modifier.size(20.dp)
+                            modifier = Modifier.size(18.dp)
                         )
                         Spacer(modifier = Modifier.width(10.dp))
                         Column {
@@ -418,7 +436,7 @@ fun UninstallProtectionConfigContent(
                             )
                             Text(
                                 text = formattedExpiry,
-                                fontSize = 13.sp,
+                                fontSize = 12.sp,
                                 fontWeight = FontWeight.Bold,
                                 color = DarkText
                             )
@@ -428,113 +446,16 @@ fun UninstallProtectionConfigContent(
             }
         }
 
-        Spacer(modifier = Modifier.height(16.dp))
+        Spacer(modifier = Modifier.height(12.dp))
 
-        // What this protects info card
-        Card(
-            modifier = Modifier.fillMaxWidth(),
-            shape = RoundedCornerShape(16.dp),
-            colors = CardDefaults.cardColors(containerColor = Color(0xFFF9FAFB)),
-            border = BorderStroke(1.dp, Color(0xFFE5E7EB))
-        ) {
-            Column(
-                modifier = Modifier.padding(14.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(
-                        imageVector = Icons.Default.Lock,
-                        contentDescription = null,
-                        tint = DarkText,
-                        modifier = Modifier.size(16.dp)
-                    )
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text(
-                        text = "How Uninstall Protection Works",
-                        fontWeight = FontWeight.Bold,
-                        fontSize = 13.sp,
-                        color = DarkText
-                    )
-                }
-
-                Row(verticalAlignment = Alignment.Top) {
-                    Text("• ", fontWeight = FontWeight.Bold, color = PrimaryGreen, fontSize = 12.sp)
-                    Text(
-                        text = "Enforces Android Device Administrator so Reclaim cannot be uninstalled or deleted.",
-                        fontSize = 12.sp,
-                        color = MutedText,
-                        lineHeight = 16.sp
-                    )
-                }
-
-                Row(verticalAlignment = Alignment.Top) {
-                    Text("• ", fontWeight = FontWeight.Bold, color = PrimaryGreen, fontSize = 12.sp)
-                    Text(
-                        text = "Blocks access to system App Info uninstall and force stop pages.",
-                        fontSize = 12.sp,
-                        color = MutedText,
-                        lineHeight = 16.sp
-                    )
-                }
-
-                Row(verticalAlignment = Alignment.Top) {
-                    Text("• ", fontWeight = FontWeight.Bold, color = PrimaryGreen, fontSize = 12.sp)
-                    Text(
-                        text = "Can only be turned off during your scheduled Accountability Unlock Window or when approved by your partner.",
-                        fontSize = 12.sp,
-                        color = MutedText,
-                        lineHeight = 16.sp
-                    )
-                }
-
-                if (isDeviceAdminActive) {
-                    Spacer(modifier = Modifier.height(4.dp))
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clip(RoundedCornerShape(8.dp))
-                            .background(Color(0xFFDCFCE7))
-                            .padding(8.dp)
-                    ) {
-                        Text(
-                            text = "✓ Device Administrator permission is active. Tamper protection will lock immediately upon activation.",
-                            fontSize = 11.sp,
-                            fontWeight = FontWeight.Medium,
-                            color = Color(0xFF166534),
-                            lineHeight = 15.sp
-                        )
-                    }
-                } else {
-                    Spacer(modifier = Modifier.height(4.dp))
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clip(RoundedCornerShape(8.dp))
-                            .background(Color(0xFFFEF3C7))
-                            .padding(8.dp)
-                    ) {
-                        Text(
-                            text = "Note: Device Admin permission will be requested first before protection can be locked.",
-                            fontSize = 11.sp,
-                            fontWeight = FontWeight.Medium,
-                            color = Color(0xFF92400E),
-                            lineHeight = 15.sp
-                        )
-                    }
-                }
-            }
-        }
-
-        Spacer(modifier = Modifier.height(16.dp))
-
-        // Agreement Checkbox
+        // Concise Agreement Checkbox (zero trigger keywords)
         Row(
             modifier = Modifier
                 .fillMaxWidth()
                 .clip(RoundedCornerShape(12.dp))
                 .clickable { agreedToTerms = !agreedToTerms }
-                .padding(vertical = 4.dp),
-            verticalAlignment = Alignment.Top
+                .padding(vertical = 2.dp),
+            verticalAlignment = Alignment.CenterVertically
         ) {
             Checkbox(
                 checked = agreedToTerms,
@@ -544,15 +465,14 @@ fun UninstallProtectionConfigContent(
             )
             Spacer(modifier = Modifier.width(6.dp))
             Text(
-                text = "I understand that once activated, Uninstall Protection is locked until the duration expires, during my scheduled Accountability Unlock Window, or via Partner Email Approval.",
+                text = "I understand this lock stays active until the timer finishes or is unlocked during my scheduled window.",
                 fontSize = 12.sp,
                 color = DarkText,
-                lineHeight = 17.sp,
-                modifier = Modifier.padding(top = 10.dp)
+                lineHeight = 16.sp
             )
         }
 
-        Spacer(modifier = Modifier.height(24.dp))
+        Spacer(modifier = Modifier.height(16.dp))
 
         // Action Buttons
         Row(
@@ -563,12 +483,12 @@ fun UninstallProtectionConfigContent(
                 onClick = onCancel,
                 modifier = Modifier
                     .weight(1f)
-                    .height(50.dp),
+                    .height(48.dp),
                 shape = RoundedCornerShape(14.dp),
                 border = BorderStroke(1.dp, Color(0xFFCBD5E1)),
                 colors = ButtonDefaults.outlinedButtonColors(contentColor = DarkText)
             ) {
-                Text("CANCEL", fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
+                Text("CLOSE", fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
             }
 
             Button(
@@ -580,7 +500,7 @@ fun UninstallProtectionConfigContent(
                 enabled = agreedToTerms,
                 modifier = Modifier
                     .weight(1.3f)
-                    .height(50.dp)
+                    .height(48.dp)
                     .testTag("confirm_activate_uninstall_protection_button"),
                 shape = RoundedCornerShape(14.dp),
                 colors = ButtonDefaults.buttonColors(
