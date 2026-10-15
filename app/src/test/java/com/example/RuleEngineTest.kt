@@ -499,6 +499,89 @@ class RuleEngineTest {
     }
 
     @Test
+    fun testYouTubeAndFacebookKeywordBlocking() {
+        val blockedKeywords = listOf("gambling", "casino online", "vape tricks")
+
+        // 1. YouTube Web Search URL
+        val ytWebSearch = RuleEngine.evaluateSearchQuery(
+            query = "https://www.youtube.com/results?search_query=best+gambling+apps",
+            isSearchProtectionEnabled = true,
+            customKeywords = blockedKeywords,
+            isAdultBlocked = false
+        )
+        assertTrue(ytWebSearch.isBlocked)
+        assertEquals("Blocked keyword: 'gambling'", ytWebSearch.reason)
+
+        // 2. YouTube App search edit text input
+        val ytAppSearch = RuleEngine.evaluateAppKeywords(
+            queryOrText = "casino online 2026",
+            customKeywords = blockedKeywords,
+            isAdultBlocked = false
+        )
+        assertTrue(ytAppSearch.isBlocked)
+        assertEquals("Blocked keyword: 'casino online'", ytAppSearch.reason)
+
+        // 3. YouTube video title in search results / feed
+        val ytVideoTitle = RuleEngine.evaluateAppKeywords(
+            queryOrText = "How to do cool vape tricks easily",
+            customKeywords = blockedKeywords,
+            isAdultBlocked = false
+        )
+        assertTrue(ytVideoTitle.isBlocked)
+        assertEquals("Blocked keyword: 'vape tricks'", ytVideoTitle.reason)
+
+        // 4. Facebook Web Search URL
+        val fbWebSearch = RuleEngine.evaluateSearchQuery(
+            query = "https://www.facebook.com/search/top/?q=gambling+groups",
+            isSearchProtectionEnabled = true,
+            customKeywords = blockedKeywords,
+            isAdultBlocked = false
+        )
+        assertTrue(fbWebSearch.isBlocked)
+
+        // 5. Facebook App search text / query
+        val fbAppSearch = RuleEngine.evaluateAppKeywords(
+            queryOrText = "gambling",
+            customKeywords = blockedKeywords,
+            isAdultBlocked = false
+        )
+        assertTrue(fbAppSearch.isBlocked)
+
+        // 6. Facebook hashtag search
+        val fbHashtagSearch = RuleEngine.evaluateSearchQuery(
+            query = "https://m.facebook.com/hashtag/gambling",
+            isSearchProtectionEnabled = true,
+            customKeywords = blockedKeywords,
+            isAdultBlocked = false
+        )
+        assertTrue(fbHashtagSearch.isBlocked)
+
+        // 7. Adult keyword in YouTube search
+        val ytAdultSearch = RuleEngine.evaluateAppKeywords(
+            queryOrText = "xxx hot videos",
+            customKeywords = emptyList(),
+            isAdultBlocked = true
+        )
+        assertTrue(ytAdultSearch.isBlocked)
+
+        // 8. Adult keyword in Facebook search
+        val fbAdultSearch = RuleEngine.evaluateAppKeywords(
+            queryOrText = "leaked nude photo",
+            customKeywords = emptyList(),
+            isAdultBlocked = true
+        )
+        assertTrue(fbAdultSearch.isBlocked)
+
+        // 9. Unrelated clean search query in YouTube
+        val ytCleanSearch = RuleEngine.evaluateAppKeywords(
+            queryOrText = "science documentary physics",
+            customKeywords = blockedKeywords,
+            isAdultBlocked = true
+        )
+        assertFalse(ytCleanSearch.isBlocked)
+    }
+
+    @Test
     fun testGoogleLensAndPictureScanEvaluation() {
         // Test Google Lens URLs
         val lensUrlEval = RuleEngine.evaluateGoogleLens(

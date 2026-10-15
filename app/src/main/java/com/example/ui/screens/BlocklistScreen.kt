@@ -476,7 +476,7 @@ fun AddKeywordDialog(
                     colors = reclaimTextFieldColors()
                 )
                 Text(
-                    text = "Adding keywords will block browser search terms and app titles containing this text.",
+                    text = "Adding keywords will block browser, YouTube, and Facebook searches and content containing this text.",
                     fontSize = 11.sp,
                     color = MutedText
                 )

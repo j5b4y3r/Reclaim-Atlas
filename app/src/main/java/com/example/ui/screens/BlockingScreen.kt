@@ -328,107 +328,10 @@ fun BlockingScreen(
                                 }
                             )
                         } else {
-                            SelfControlVpnService.stopVpn(context)
                             viewModel.setAdultContentBlocked(false)
                         }
                     }
                 )
-
-                // In-App CleanBrowsing DNS Card (Directly managed by Reclaim - zero manual setup)
-                Card(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .testTag("cleanbrowsing_in_app_dns_card"),
-                    shape = RoundedCornerShape(16.dp),
-                    colors = CardDefaults.cardColors(containerColor = if (adultBlocked) Color(0xFFF0FDF4) else Color(0xFFF8FAFC)),
-                    border = BorderStroke(1.dp, if (adultBlocked) Color(0xFFBBF7D0) else Color(0xFFE2E8F0))
-                ) {
-                    Column(
-                        modifier = Modifier.padding(14.dp)
-                    ) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Icon(
-                                    imageVector = Icons.Default.Shield,
-                                    contentDescription = null,
-                                    tint = if (adultBlocked) PrimaryGreen else Color(0xFF64748B),
-                                    modifier = Modifier.size(18.dp)
-                                )
-                                Spacer(modifier = Modifier.width(8.dp))
-                                Text(
-                                    text = "CleanBrowsing DNS",
-                                    fontSize = 13.sp,
-                                    fontWeight = FontWeight.Bold,
-                                    color = if (adultBlocked) Color(0xFF166534) else DarkText
-                                )
-                            }
-                            // Status pill
-                            Box(
-                                modifier = Modifier
-                                    .clip(RoundedCornerShape(12.dp))
-                                    .background(if (adultBlocked) Color(0xFFDCFCE7) else Color(0xFFE2E8F0))
-                                    .padding(horizontal = 8.dp, vertical = 2.dp)
-                            ) {
-                                Text(
-                                    text = if (adultBlocked) "Active in Reclaim" else "Inactive",
-                                    fontSize = 11.sp,
-                                    fontWeight = FontWeight.SemiBold,
-                                    color = if (adultBlocked) Color(0xFF15803D) else Color(0xFF64748B)
-                                )
-                            }
-                        }
-                        Spacer(modifier = Modifier.height(6.dp))
-                        Text(
-                            text = if (adultBlocked) {
-                                "Adult domains resolve to NXDOMAIN via CleanBrowsing DNS (185.228.168.10 / adult-filter-dns.cleanbrowsing.org) with strict SafeSearch enforced. Directly managed by Reclaim."
-                            } else {
-                                "CleanBrowsing Adult Filter DNS dynamically blocks adult websites and enforces SafeSearch directly through the Reclaim app without any manual network setup."
-                            },
-                            fontSize = 11.sp,
-                            color = if (adultBlocked) Color(0xFF15803D) else Color(0xFF64748B),
-                            lineHeight = 15.sp
-                        )
-                        if (!adultBlocked) {
-                            Spacer(modifier = Modifier.height(10.dp))
-                            Button(
-                                onClick = {
-                                    PermissionHelper.activateCleanBrowsingDnsViaReclaim(
-                                        context = context,
-                                        onRequireSystemConsent = { vpnLauncher.launch(it) },
-                                        onActivated = {
-                                            viewModel.setAdultContentBlocked(true)
-                                            Toast.makeText(context, "CleanBrowsing DNS added and activated via Reclaim!", Toast.LENGTH_SHORT).show()
-                                        }
-                                    )
-                                },
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .height(38.dp)
-                                    .testTag("activate_dns_in_app_button"),
-                                shape = RoundedCornerShape(8.dp),
-                                colors = ButtonDefaults.buttonColors(containerColor = PrimaryGreen)
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Default.Shield,
-                                    contentDescription = null,
-                                    tint = Color.White,
-                                    modifier = Modifier.size(16.dp)
-                                )
-                                Spacer(modifier = Modifier.width(6.dp))
-                                Text(
-                                    text = "Add CleanBrowsing DNS via Reclaim",
-                                    fontSize = 12.sp,
-                                    fontWeight = FontWeight.Bold,
-                                    color = Color.White
-                                )
-                            }
-                        }
-                    }
-                }
 
                 AdvancedToggleItem(
                     title = "Block Image & Video Search",

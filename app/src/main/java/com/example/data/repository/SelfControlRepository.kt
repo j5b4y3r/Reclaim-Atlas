@@ -667,6 +667,17 @@ class SelfControlRepository(
         triggerCloudSyncDebounced()
     }
 
+    suspend fun deleteFocusScheduleById(id: Long) {
+        val schedule = focusScheduleDao.getScheduleById(id)
+        if (schedule != null) {
+            deleteFocusSchedule(schedule)
+        } else {
+            focusScheduleDao.deleteScheduleById(id)
+            cachedSchedules = try { focusScheduleDao.getAllSchedulesSync() } catch (_: Throwable) { cachedSchedules }
+            triggerCloudSyncDebounced()
+        }
+    }
+
     suspend fun setFocusScheduleEnabled(id: Long, enabled: Boolean) {
         focusScheduleDao.setScheduleEnabled(id, enabled)
         cachedSchedules = try { focusScheduleDao.getAllSchedulesSync() } catch (_: Throwable) { cachedSchedules }
@@ -984,6 +995,46 @@ class SelfControlRepository(
                         if (cat != null) {
                             ruleDao.setCategoryEnabled(cat, false)
                         }
+                    }
+                    request.actionKey.startsWith("FOCUS_SCHEDULE_DISABLE_") -> {
+                        val id = request.ruleId ?: request.actionKey.removePrefix("FOCUS_SCHEDULE_DISABLE_").toLongOrNull()
+                        if (id != null && id > 0) {
+                            setFocusScheduleEnabled(id, false)
+                        }
+                    }
+                    request.actionKey.startsWith("FOCUS_SCHEDULE_DELETE_") -> {
+                        val id = request.ruleId ?: request.actionKey.removePrefix("FOCUS_SCHEDULE_DELETE_").toLongOrNull()
+                        if (id != null && id > 0) {
+                            deleteFocusScheduleById(id)
+                        }
+                    }
+                    request.actionKey.startsWith("FOCUS_SCHEDULE_EDIT_") -> {
+                        val id = request.ruleId ?: request.actionKey.removePrefix("FOCUS_SCHEDULE_EDIT_").toLongOrNull()
+                        if (id != null && request.payload.contains("|")) {
+                            val parts = request.payload.split("|")
+                            val title = parts.getOrNull(0) ?: ""
+                            val startTime = parts.getOrNull(1) ?: "09:00"
+                            val endTime = parts.getOrNull(2) ?: "17:00"
+                            val isDaily = parts.getOrNull(3)?.toBooleanStrictOrNull() ?: true
+                            val selectedDays = parts.getOrNull(4) ?: ""
+                            val allowedApps = parts.getOrNull(5) ?: ""
+                            val isEnabled = parts.getOrNull(6)?.toBooleanStrictOrNull() ?: true
+                            updateFocusSchedule(
+                                FocusSchedule(
+                                    id = id,
+                                    title = title,
+                                    startTime = startTime,
+                                    endTime = endTime,
+                                    isDaily = isDaily,
+                                    selectedDays = selectedDays,
+                                    allowedApps = allowedApps,
+                                    isEnabled = isEnabled
+                                )
+                            )
+                        }
+                    }
+                    request.actionKey == "FOCUS_SESSION_STOP" -> {
+                        com.example.service.focus.FocusModeService.stopFocus(context)
                     }
                 }
             }

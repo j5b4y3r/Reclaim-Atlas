@@ -85,7 +85,9 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.ui.unit.sp
 import androidx.core.graphics.drawable.toBitmap
 import com.example.data.model.FocusSchedule
+import com.example.domain.engine.LockedActionTarget
 import com.example.service.focus.FocusModeService
+import com.example.ui.components.EmailAlreadySentBadge
 import com.example.ui.theme.AppBackground
 import com.example.ui.theme.CardSurface
 import com.example.ui.theme.DarkText
@@ -109,6 +111,7 @@ fun FocusScreen(
     val context = LocalContext.current
     val schedules by viewModel.allFocusSchedules.collectAsState()
     val activeSession by viewModel.activeSession.collectAsState()
+    val activePartnerRequests by viewModel.activePartnerRequests.collectAsState()
 
     var showAddSheet by remember { mutableStateOf(false) }
     var editingSchedule by remember { mutableStateOf<FocusSchedule?>(null) }
@@ -317,14 +320,25 @@ fun FocusScreen(
                                     }
                                 }
                                 if (activeSession != null) {
-                                    Button(
-                                        onClick = { viewModel.stopInstantFocus(context) },
-                                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFDC2626)),
-                                        shape = RoundedCornerShape(20.dp)
-                                    ) {
-                                        Icon(Icons.Default.Stop, contentDescription = "Stop", modifier = Modifier.size(16.dp))
-                                        Spacer(modifier = Modifier.width(4.dp))
-                                        Text("Stop", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                                    val hasPendingStop = activePartnerRequests.containsKey("FOCUS_SESSION_STOP")
+                                    Column(horizontalAlignment = Alignment.End) {
+                                        Button(
+                                            onClick = { viewModel.stopInstantFocus(context) },
+                                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFDC2626)),
+                                            shape = RoundedCornerShape(20.dp)
+                                        ) {
+                                            Icon(Icons.Default.Stop, contentDescription = "Stop", modifier = Modifier.size(16.dp))
+                                            Spacer(modifier = Modifier.width(4.dp))
+                                            Text("Stop", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                                        }
+                                        if (hasPendingStop) {
+                                            Spacer(modifier = Modifier.height(4.dp))
+                                            EmailAlreadySentBadge(onClick = {
+                                                viewModel.triggerLockedItemDialog(
+                                                    LockedActionTarget("FOCUS_SESSION_STOP", "Stop Active Focus Mode")
+                                                )
+                                            })
+                                        }
                                     }
                                 }
                             }
@@ -406,14 +420,71 @@ fun FocusScreen(
                     }
                 } else {
                     items(schedules, key = { it.id }) { schedule ->
+                        val disableKey = "FOCUS_SCHEDULE_DISABLE_${schedule.id}"
+                        val deleteKey = "FOCUS_SCHEDULE_DELETE_${schedule.id}"
+                        val editKey = "FOCUS_SCHEDULE_EDIT_${schedule.id}"
+                        val scheduleTitle = schedule.title.ifBlank { "Schedule #${schedule.id}" }
+                        val hasPendingDisable = activePartnerRequests.containsKey(disableKey)
+                        val hasPendingDelete = activePartnerRequests.containsKey(deleteKey)
+                        val hasPendingEdit = activePartnerRequests.containsKey(editKey)
+                        val hasPendingEmailCode = hasPendingDisable || hasPendingDelete || hasPendingEdit
+
                         FocusScheduleItem(
                             schedule = schedule,
+                            hasPendingEmailCode = hasPendingEmailCode,
+                            onOpenPendingCode = {
+                                when {
+                                    hasPendingDelete -> viewModel.triggerLockedItemDialog(
+                                        LockedActionTarget(
+                                            actionKey = deleteKey,
+                                            actionTitle = "Delete Focus Schedule: $scheduleTitle",
+                                            targetType = "DELETE_FOCUS_SCHEDULE",
+                                            ruleId = schedule.id
+                                        )
+                                    )
+                                    hasPendingEdit -> viewModel.triggerLockedItemDialog(
+                                        LockedActionTarget(
+                                            actionKey = editKey,
+                                            actionTitle = "Edit Focus Schedule: $scheduleTitle",
+                                            targetType = "EDIT_FOCUS_SCHEDULE",
+                                            ruleId = schedule.id
+                                        )
+                                    )
+                                    else -> viewModel.triggerLockedItemDialog(
+                                        LockedActionTarget(
+                                            actionKey = disableKey,
+                                            actionTitle = "Disable Focus Schedule: $scheduleTitle",
+                                            targetType = "DISABLE_FOCUS_SCHEDULE",
+                                            ruleId = schedule.id
+                                        )
+                                    )
+                                }
+                            },
                             onToggle = { enabled ->
                                 viewModel.toggleFocusSchedule(schedule.id, enabled)
                             },
                             onEdit = {
-                                editingSchedule = schedule
-                                showAddSheet = true
+                                val lockStatus = viewModel.checkAccountabilityLock(
+                                    LockedActionTarget(
+                                        actionKey = editKey,
+                                        actionTitle = "Edit Focus Schedule: $scheduleTitle",
+                                        targetType = "EDIT_FOCUS_SCHEDULE",
+                                        ruleId = schedule.id
+                                    )
+                                )
+                                if (lockStatus.isLocked) {
+                                    viewModel.triggerLockedItemDialog(
+                                        LockedActionTarget(
+                                            actionKey = editKey,
+                                            actionTitle = "Edit Focus Schedule: $scheduleTitle",
+                                            targetType = "EDIT_FOCUS_SCHEDULE",
+                                            ruleId = schedule.id
+                                        )
+                                    )
+                                } else {
+                                    editingSchedule = schedule
+                                    showAddSheet = true
+                                }
                             },
                             onDelete = {
                                 viewModel.deleteFocusSchedule(schedule)
@@ -442,16 +513,19 @@ fun FocusScreen(
                 initialSchedule = editingSchedule,
                 onSchedule = { title, start, end, isDaily, days, allowedApps ->
                     if (editingSchedule != null) {
-                        viewModel.updateFocusSchedule(
-                            editingSchedule!!.copy(
-                                title = title,
-                                startTime = start,
-                                endTime = end,
-                                isDaily = isDaily,
-                                selectedDays = days,
-                                allowedApps = allowedApps
-                            )
+                        val updated = editingSchedule!!.copy(
+                            title = title,
+                            startTime = start,
+                            endTime = end,
+                            isDaily = isDaily,
+                            selectedDays = days,
+                            allowedApps = allowedApps
                         )
+                        val success = viewModel.updateFocusSchedule(updated)
+                        if (success) {
+                            showAddSheet = false
+                            editingSchedule = null
+                        }
                     } else {
                         viewModel.addFocusSchedule(
                             FocusSchedule(
@@ -464,9 +538,9 @@ fun FocusScreen(
                                 isEnabled = true
                             )
                         )
+                        showAddSheet = false
+                        editingSchedule = null
                     }
-                    showAddSheet = false
-                    editingSchedule = null
                 },
                 onCancel = {
                     showAddSheet = false
@@ -510,6 +584,8 @@ fun FocusScreen(
 @Composable
 fun FocusScheduleItem(
     schedule: FocusSchedule,
+    hasPendingEmailCode: Boolean = false,
+    onOpenPendingCode: () -> Unit = {},
     onToggle: (Boolean) -> Unit,
     onEdit: () -> Unit,
     onDelete: () -> Unit
@@ -572,6 +648,10 @@ fun FocusScheduleItem(
                             fontSize = 12.sp,
                             color = MutedText
                         )
+                    }
+                    if (hasPendingEmailCode) {
+                        Spacer(modifier = Modifier.height(6.dp))
+                        EmailAlreadySentBadge(onClick = onOpenPendingCode)
                     }
                 }
 

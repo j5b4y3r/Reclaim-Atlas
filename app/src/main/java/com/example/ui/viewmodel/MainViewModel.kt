@@ -363,8 +363,24 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         FocusModeService.startFocus(getApplication(), durationMinutes)
     }
 
-    fun stopFocusSession() {
-        FocusModeService.stopFocus(getApplication())
+    fun stopFocusSession(): Boolean {
+        val actionKey = "FOCUS_SESSION_STOP"
+        val lockStatus = checkAccountabilityLock(
+            LockedActionTarget(
+                actionKey = actionKey,
+                actionTitle = "Stop Active Focus Mode",
+                targetType = "SINGLE_ACTION"
+            )
+        )
+        if (lockStatus.isLocked) {
+            _accountabilityLockDialogState.value = lockStatus
+            return false
+        }
+        viewModelScope.launch {
+            repository.clearPartnerRequestForAction(actionKey)
+            FocusModeService.stopFocus(getApplication())
+        }
+        return true
     }
 
     fun toggleRule(ruleId: Long, enabled: Boolean): Boolean {
@@ -612,6 +628,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             if (blocked) {
                 repository.clearPartnerRequestForAction(actionKey)
                 com.example.util.PermissionHelper.tryApplyCleanBrowsingPrivateDns(getApplication())
+            } else {
+                val vpnExplicitlyEnabled = prefs.vpnEnabled.first()
+                if (!vpnExplicitlyEnabled) {
+                    SelfControlVpnService.stopVpn(getApplication())
+                }
             }
         }
     }
@@ -1080,30 +1101,104 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun updateFocusSchedule(schedule: com.example.data.model.FocusSchedule) {
+    fun updateFocusSchedule(schedule: com.example.data.model.FocusSchedule): Boolean {
+        val scheduleTitle = schedule.title.ifBlank { "Schedule #${schedule.id}" }
+        val actionKey = "FOCUS_SCHEDULE_EDIT_${schedule.id}"
+        val lockStatus = checkAccountabilityLock(
+            LockedActionTarget(
+                actionKey = actionKey,
+                actionTitle = "Edit Focus Schedule: $scheduleTitle",
+                targetType = "EDIT_FOCUS_SCHEDULE",
+                ruleId = schedule.id,
+                payload = "${schedule.title}|${schedule.startTime}|${schedule.endTime}|${schedule.isDaily}|${schedule.selectedDays}|${schedule.allowedApps}|${schedule.isEnabled}"
+            )
+        )
+        if (lockStatus.isLocked) {
+            _accountabilityLockDialogState.value = lockStatus
+            return false
+        }
         viewModelScope.launch {
             repository.updateFocusSchedule(schedule)
+            repository.clearPartnerRequestForAction(actionKey)
         }
+        return true
     }
 
-    fun toggleFocusSchedule(scheduleId: Long, enabled: Boolean) {
+    fun toggleFocusSchedule(scheduleId: Long, enabled: Boolean): Boolean {
+        val schedule = allFocusSchedules.value.find { it.id == scheduleId }
+        val scheduleTitle = schedule?.title?.ifBlank { "Schedule #$scheduleId" } ?: "Schedule #$scheduleId"
+        val actionKey = "FOCUS_SCHEDULE_DISABLE_$scheduleId"
+        if (!enabled) {
+            val lockStatus = checkAccountabilityLock(
+                LockedActionTarget(
+                    actionKey = actionKey,
+                    actionTitle = "Disable Focus Schedule: $scheduleTitle",
+                    targetType = "DISABLE_FOCUS_SCHEDULE",
+                    ruleId = scheduleId
+                )
+            )
+            if (lockStatus.isLocked) {
+                _accountabilityLockDialogState.value = lockStatus
+                return false
+            }
+        }
         viewModelScope.launch {
             repository.setFocusScheduleEnabled(scheduleId, enabled)
+            if (enabled) {
+                repository.clearPartnerRequestForAction(actionKey)
+                repository.clearPartnerRequestForAction("FOCUS_SCHEDULE_DELETE_$scheduleId")
+                repository.clearPartnerRequestForAction("FOCUS_SCHEDULE_EDIT_$scheduleId")
+            }
         }
+        return true
     }
 
-    fun deleteFocusSchedule(schedule: com.example.data.model.FocusSchedule) {
+    fun deleteFocusSchedule(schedule: com.example.data.model.FocusSchedule): Boolean {
+        val scheduleTitle = schedule.title.ifBlank { "Schedule #${schedule.id}" }
+        val actionKey = "FOCUS_SCHEDULE_DELETE_${schedule.id}"
+        val lockStatus = checkAccountabilityLock(
+            LockedActionTarget(
+                actionKey = actionKey,
+                actionTitle = "Delete Focus Schedule: $scheduleTitle",
+                targetType = "DELETE_FOCUS_SCHEDULE",
+                ruleId = schedule.id
+            )
+        )
+        if (lockStatus.isLocked) {
+            _accountabilityLockDialogState.value = lockStatus
+            return false
+        }
         viewModelScope.launch {
             repository.deleteFocusSchedule(schedule)
+            repository.clearPartnerRequestForAction(actionKey)
+            repository.clearPartnerRequestForAction("FOCUS_SCHEDULE_DISABLE_${schedule.id}")
+            repository.clearPartnerRequestForAction("FOCUS_SCHEDULE_EDIT_${schedule.id}")
         }
+        return true
     }
 
     fun startInstantFocus(context: android.content.Context, durationMinutes: Int) {
         com.example.service.focus.FocusModeService.startFocus(context, durationMinutes)
     }
 
-    fun stopInstantFocus(context: android.content.Context) {
-        com.example.service.focus.FocusModeService.stopFocus(context)
+    fun stopInstantFocus(context: android.content.Context): Boolean {
+        val actionKey = "FOCUS_SESSION_STOP"
+        val lockStatus = checkAccountabilityLock(
+            LockedActionTarget(
+                actionKey = actionKey,
+                actionTitle = "Stop Active Focus Mode",
+                targetType = "SINGLE_ACTION"
+            )
+        )
+        if (lockStatus.isLocked) {
+            _accountabilityLockDialogState.value = lockStatus
+            return false
+        }
+        viewModelScope.launch {
+            repository.clearPartnerRequestForAction(actionKey)
+            com.example.service.focus.FocusModeService.stopFocus(context)
+        }
+        return true
     }
 
     fun resetStreak(reason: String = "", mood: String = "Reflective") {

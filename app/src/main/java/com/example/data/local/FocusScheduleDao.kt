@@ -35,6 +35,12 @@ interface FocusScheduleDao {
     @Delete
     suspend fun deleteSchedule(schedule: FocusSchedule)
 
+    @Query("SELECT * FROM focus_schedules WHERE id = :id LIMIT 1")
+    suspend fun getScheduleById(id: Long): FocusSchedule?
+
+    @Query("DELETE FROM focus_schedules WHERE id = :id")
+    suspend fun deleteScheduleById(id: Long)
+
     @Query("DELETE FROM focus_schedules")
     suspend fun clearAll()
 }

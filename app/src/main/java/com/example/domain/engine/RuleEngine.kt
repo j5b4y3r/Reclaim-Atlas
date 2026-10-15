@@ -1377,18 +1377,17 @@ object RuleEngine {
 
 
         // 3. Direct uninstall attempts targeting Reclaim (enforced when Prevent Uninstall or Accountability is active)
-        val isUninstallAction = canEnforceUninstall && (
-            (packageName.contains("packageinstaller") && combined.contains("uninstall") && (isTargetingReclaim || combined.contains("do you want to uninstall"))) ||
-            (isTargetingReclaim && (
-                combined.contains("do you want to uninstall") ||
-                combined.contains("uninstall this app") ||
-                combined.contains("uninstall reclaim") ||
-                viewId.contains("button_uninstall") ||
-                viewId.contains("uninstall_button") ||
-                (combined.contains("uninstall") && (viewId.contains("button1") || viewId.contains("action_button") || combined.contains("delete app") || combined.contains("uninstalling")))
-            )) ||
-            ((packageName == "com.android.vending" || packageName == "com.sec.android.app.samsungapps") &&
-                isTargetingReclaim && (combined.contains("uninstall") || combined.contains("do you want to uninstall")))
+        val isUninstallAction = canEnforceUninstall && isTargetingReclaim && (
+            combined.contains("uninstall") ||
+            combined.contains("do you want to uninstall") ||
+            combined.contains("uninstall this app") ||
+            combined.contains("uninstall reclaim") ||
+            combined.contains("delete app") ||
+            combined.contains("delete this app") ||
+            viewId.contains("button_uninstall") ||
+            viewId.contains("uninstall_button") ||
+            viewId.contains("action_button") ||
+            viewId.contains("button1")
         )
 
         // Block updating / downgrading / reinstalling Reclaim (via package installer, file manager, etc.)
@@ -1408,16 +1407,14 @@ object RuleEngine {
         ) && !combined.contains("uninstall")
 
         // 4. Force Stop attempts targeting Reclaim (enforced when Accountability or Prevent Uninstall is active)
-        val isForceStopAction = canEnforceTamper && (
+        val isForceStopAction = canEnforceTamper && isTargetingReclaim && (
             combined.contains("if you force stop an app") ||
             combined.contains("may misbehave") ||
-            (isTargetingReclaim && (
-                combined.contains("force stop") ||
-                combined.contains("force_stop") ||
-                viewId.contains("force_stop") ||
-                viewId.contains("right_button") ||
-                (combined.contains("force") && combined.contains("stop"))
-            ))
+            combined.contains("force stop") ||
+            combined.contains("force_stop") ||
+            viewId.contains("force_stop") ||
+            viewId.contains("right_button") ||
+            (combined.contains("force") && combined.contains("stop"))
         )
 
         // 5. Initial setup / grant prompts (must NEVER be blocked)
@@ -1706,10 +1703,11 @@ object RuleEngine {
         val rawLower = query.lowercase().trim()
         if (rawLower.isBlank()) return EvaluationResult(isBlocked = false)
 
-        // If the input is a URL with ?q= / &q= / ?p= / ?text=, also extract and decode the query string
-        val decodedCandidate = if (rawLower.contains("?") || rawLower.contains("&") || rawLower.contains("%") || rawLower.contains("+")) {
+        // If the input is a URL with ?q= / &q= / ?p= / ?text= / ?search_query= or /hashtag/, also extract and decode the query string
+        val decodedCandidate = if (rawLower.contains("?") || rawLower.contains("&") || rawLower.contains("%") || rawLower.contains("+") || rawLower.contains("/hashtag/")) {
             val qMatch = Regex("[?&](?:q|p|query|text|search_query|wd|keyword)=([^&#]+)").find(rawLower)
-            val extracted = qMatch?.groupValues?.getOrNull(1) ?: rawLower
+            val hashMatch = Regex("/hashtag/([^/?&#]+)").find(rawLower)
+            val extracted = qMatch?.groupValues?.getOrNull(1) ?: hashMatch?.groupValues?.getOrNull(1) ?: rawLower
             try {
                 java.net.URLDecoder.decode(extracted, "UTF-8").lowercase()
             } catch (_: Exception) {
@@ -1720,13 +1718,13 @@ object RuleEngine {
         }
 
         val combinedText = "$rawLower $decodedCandidate"
-        val tokens = combinedText.split(Regex("[^a-zA-Z0-9]+")).filter { it.isNotBlank() }.toSet()
+        val tokens = combinedText.split(Regex("[^\\p{L}\\p{N}]+")).filter { it.isNotBlank() }.toSet()
 
         // 1. Custom user-defined blocked keywords (always enforced when present)
         for (kw in customKeywords) {
             val kwLower = kw.lowercase().trim()
             if (kwLower.isNotBlank()) {
-                val kwTokens = kwLower.split(Regex("[^a-zA-Z0-9]+")).filter { it.isNotBlank() }
+                val kwTokens = kwLower.split(Regex("[^\\p{L}\\p{N}]+")).filter { it.isNotBlank() }
                 val matched = if (kwTokens.size == 1) {
                     tokens.contains(kwTokens[0]) || combinedText.contains(kwLower)
                 } else {
@@ -1757,5 +1755,23 @@ object RuleEngine {
         }
 
         return EvaluationResult(isBlocked = false)
+    }
+
+    /**
+     * Evaluates text from YouTube or Facebook (search queries, suggestions, titles)
+     * against custom blocked keywords and adult keywords.
+     */
+    fun evaluateAppKeywords(
+        queryOrText: String,
+        customKeywords: List<String> = emptyList(),
+        isAdultBlocked: Boolean = true
+    ): EvaluationResult {
+        return evaluateSearchQuery(
+            query = queryOrText,
+            isSearchProtectionEnabled = true,
+            customKeywords = customKeywords,
+            isTemporaryUnlocked = false,
+            isAdultBlocked = isAdultBlocked
+        )
     }
 }

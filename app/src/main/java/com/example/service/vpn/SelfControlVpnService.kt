@@ -81,7 +81,7 @@ class SelfControlVpnService : VpnService() {
     private var vpnInterface: ParcelFileDescriptor? = null
     private var vpnJob: Job? = null
     private val serviceScope = CoroutineScope(Dispatchers.IO)
-    private val domainEvaluationCache = java.util.concurrent.ConcurrentHashMap<String, Boolean>()
+    private val domainEvaluationCache = java.util.concurrent.ConcurrentHashMap<String, Pair<Boolean, BlockCategory>>()
 
     private val upstreamDnsAddresses: List<InetAddress> by lazy {
         listOf(
@@ -284,10 +284,9 @@ class SelfControlVpnService : VpnService() {
         val rules = repo.getEnabledRulesCached()
 
         // Fast O(1) in-memory decision cache to bypass rule evaluation on identical domains
-        var evalCategory: BlockCategory = BlockCategory.CUSTOM
-        val cachedResult = domainEvaluationCache[domain]
-        val isBlocked = if (cachedResult != null) {
-            cachedResult
+        val cached = domainEvaluationCache[domain]
+        val (isBlocked, evalCategory) = if (cached != null) {
+            cached
         } else {
             var eval = RuleEngine.evaluateDomain(domain, rules, isTempUnlocked, isAdultBlocked)
             if (!eval.isBlocked && isImageSearchBlocked) {
@@ -306,9 +305,9 @@ class SelfControlVpnService : VpnService() {
             if (domainEvaluationCache.size > 2000) {
                 domainEvaluationCache.clear()
             }
-            domainEvaluationCache[domain] = eval.isBlocked
-            evalCategory = eval.category
-            eval.isBlocked
+            val res = Pair(eval.isBlocked, eval.category)
+            domainEvaluationCache[domain] = res
+            res
         }
 
         if (isBlocked) {
@@ -397,7 +396,7 @@ class SelfControlVpnService : VpnService() {
                 if (isDnsBlocked) {
                     AdultBlockingEngine.rememberAdultDomain(domain, "cleanbrowsing_adult_dns")
                     totalBlockedRequests++
-                    domainEvaluationCache[domain] = true
+                    domainEvaluationCache[domain] = Pair(true, BlockCategory.ADULT)
                     SelfControlApp.repository.recordBlockAttempt(
                         targetName = domain,
                         ruleType = com.example.data.model.RuleType.DOMAIN,

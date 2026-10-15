@@ -1095,47 +1095,6 @@ class SelfControlAccessibilityService : AccessibilityService() {
 
         if (com.example.MainActivity.isForeground || isOwnAppPackage(packageName)) return
 
-        // 0A. Block updating / downgrading / reinstalling Reclaim via Package Installer, File Manager, Browser, etc.
-        // Runs whenever Uninstall Protection is active, independent of whether "Block New Apps" is enabled!
-        if (isUninstallProtection) {
-            val rootNode = try { rootInActiveWindow ?: eventSource } catch (_: Throwable) { eventSource }
-            if (rootNode != null && !isOwnAppPackage(rootNode.packageName?.toString())) {
-                val txt = collectQuickWindowText(rootNode).lowercase()
-                val isReclaimTarget = txt.contains("reclaim") ||
-                        txt.contains("healinglab") ||
-                        txt.contains("copsli") ||
-                        txt.contains("com.healinglab.reclaim.app") ||
-                        txt.contains("com.example") ||
-                        txt.contains("digital self-control") ||
-                        txt.contains("selfcontrol")
-                val isInstallAction = txt.contains("install") ||
-                        txt.contains("update") ||
-                        txt.contains("replace") ||
-                        txt.contains("downgrade") ||
-                        txt.contains("do you want to install") ||
-                        txt.contains("want to update") ||
-                        txt.contains("existing app") ||
-                        txt.contains("existing application") ||
-                        txt.contains("app will be replaced") ||
-                        txt.contains("version of this app") ||
-                        txt.contains("ইনস্টল") ||
-                        txt.contains("আপডেট")
-                val isUninstalling = txt.contains("do you want to uninstall") || txt.contains("delete this app")
-                if (isReclaimTarget && isInstallAction && !isUninstalling) {
-                    Log.d("AccessibilityService", "BLOCKED: Attempt to update/downgrade/reinstall Reclaim")
-                    triggerIntervention(
-                        target = "Update/Reinstall Blocked",
-                        ruleType = RuleType.APP,
-                        category = BlockCategory.CUSTOM,
-                        reason = "Updating, reinstalling, or downgrading Reclaim is blocked while Prevent Uninstall is active. Disable Prevent Uninstall first.",
-                        appPackage = packageName,
-                        bypassCooldown = true
-                    )
-                    return
-                }
-            }
-        }
-
         // Check Settings for Accessibility Tampering, Force Stop, Permission Tampering, Developer Options or Uninstall Attempt
         // ONLY when Prevent Uninstall or Accountability Lock is active.
         if (isSettings && (isUninstallProtection || isAccountabilityLocked)) {
@@ -1234,70 +1193,67 @@ class SelfControlAccessibilityService : AccessibilityService() {
             return
         }
 
+        // 1A. Check Package Installers for Reclaim Uninstall or Reclaim Update/Downgrade/Reinstall attempts
+        val isHomeLauncher = getAllHomeLauncherPackages().contains(packageName) || packageName == "com.android.systemui"
+        val isApkInstallerPkg = !isHomeLauncher && (PACKAGE_INSTALLER_PACKAGES.contains(packageName) ||
+                packageName.contains("packageinstaller", ignoreCase = true) ||
+                packageName.contains("documentsui", ignoreCase = true) ||
+                packageName.contains("nbu.files", ignoreCase = true))
+
+        if (isApkInstallerPkg && isUninstallProtection) {
+            val r = try { rootInActiveWindow ?: eventSource } catch (_: Throwable) { null }
+            val txt = r?.let { collectQuickWindowText(it) }?.lowercase() ?: ""
+            val isTargetingReclaim = txt.contains("reclaim") ||
+                    txt.contains("healinglab") ||
+                    txt.contains("copsli") ||
+                    txt.contains("com.healinglab.reclaim.app") ||
+                    txt.contains("com.example") ||
+                    txt.contains("digital self-control") ||
+                    txt.contains("selfcontrol")
+            val isUninstalling = (txt.contains("uninstall") || txt.contains("do you want to uninstall") || txt.contains("delete")) && isTargetingReclaim
+
+            if (isUninstalling) {
+                r?.let {
+                    inspectNodeForUninstall(
+                        root = it,
+                        packageName = packageName,
+                        isUninstallProtection = true,
+                        isAccountabilityLocked = isAccountabilityLocked,
+                        isAccountabilityEnabled = isAccEnabled
+                    )
+                }
+            } else if (isTargetingReclaim) {
+                val isInstallAction = txt.contains("install") ||
+                        txt.contains("update") ||
+                        txt.contains("replace") ||
+                        txt.contains("downgrade") ||
+                        txt.contains("do you want to install") ||
+                        txt.contains("want to update") ||
+                        txt.contains("an existing app") ||
+                        txt.contains("existing application") ||
+                        txt.contains("replace the current") ||
+                        txt.contains("app will be replaced") ||
+                        txt.contains("version of this app") ||
+                        txt.contains("ইনস্টল") ||
+                        txt.contains("আপডেট")
+                if (isInstallAction) {
+                    Log.d("AccessibilityService", "BLOCKED: Attempt to update/downgrade/reinstall Reclaim via package installer")
+                    triggerIntervention(
+                        target = "Update/Reinstall Blocked",
+                        ruleType = RuleType.APP,
+                        category = BlockCategory.CUSTOM,
+                        reason = "Updating, downgrading, or reinstalling Reclaim is blocked while Prevent Uninstall is active. Disable Prevent Uninstall first.",
+                        appPackage = packageName,
+                        bypassCooldown = true
+                    )
+                    return
+                }
+            }
+        }
+
         // 1. Block New App Installs & Newly Installed Apps (installed from Play Store or APK file after the block was enabled)
         if (isNewAppsBlocked) {
             prefs.ensureNewAppsBaselineInitialized()
-
-            // 1A. Check Package Installers and File Managers for Uninstall or Update/Downgrade/Reinstall attempts targeting Reclaim
-            val isApkInstallerPkg = PACKAGE_INSTALLER_PACKAGES.contains(packageName) ||
-                    packageName.contains("packageinstaller", ignoreCase = true) ||
-                    packageName.contains("file", ignoreCase = true) ||
-                    packageName.contains("myfiles", ignoreCase = true) ||
-                    packageName.contains("explorer", ignoreCase = true) ||
-                    packageName.contains("documentsui", ignoreCase = true) ||
-                    packageName.contains("nbu.files", ignoreCase = true)
-            if (isApkInstallerPkg) {
-                val r = try { rootInActiveWindow ?: eventSource } catch (_: Throwable) { null }
-                val txt = r?.let { collectQuickWindowText(it) }?.lowercase() ?: ""
-                val isUninstalling = txt.contains("uninstall") || txt.contains("do you want to uninstall") || txt.contains("delete")
-                if (isUninstalling && isUninstallProtection) {
-                    r?.let {
-                        inspectNodeForUninstall(
-                            root = it,
-                            packageName = packageName,
-                            isUninstallProtection = true,
-                            isAccountabilityLocked = isAccountabilityLocked,
-                            isAccountabilityEnabled = isAccEnabled
-                        )
-                    }
-                }
-
-                // 1A-2. Block update/downgrade/reinstall of Reclaim when Prevent Uninstall is active
-                if (isUninstallProtection) {
-                    val isReclaimTarget = txt.contains("reclaim") ||
-                            txt.contains("healinglab") ||
-                            txt.contains("copsli") ||
-                            txt.contains("com.healinglab.reclaim.app") ||
-                            txt.contains("com.example") ||
-                            txt.contains("digital self-control") ||
-                            txt.contains("selfcontrol")
-                    val isInstallAction = txt.contains("install") ||
-                            txt.contains("update") ||
-                            txt.contains("replace") ||
-                            txt.contains("downgrade") ||
-                            txt.contains("do you want to install") ||
-                            txt.contains("want to update") ||
-                            txt.contains("an existing app") ||
-                            txt.contains("existing application") ||
-                            txt.contains("replace the current") ||
-                            txt.contains("app will be replaced") ||
-                            txt.contains("version of this app") ||
-                            txt.contains("ইনস্টল") ||
-                            txt.contains("আপডেট")
-                    if (isReclaimTarget && isInstallAction && !isUninstalling) {
-                        Log.d("AccessibilityService", "BLOCKED: Attempt to update/downgrade/reinstall Reclaim via package installer")
-                        triggerIntervention(
-                            target = "Update/Reinstall Blocked",
-                            ruleType = RuleType.APP,
-                            category = BlockCategory.CUSTOM,
-                            reason = "Updating, downgrading, or reinstalling Reclaim is blocked while Prevent Uninstall is active. Disable Prevent Uninstall first.",
-                            appPackage = packageName,
-                            bypassCooldown = true
-                        )
-                        return
-                    }
-                }
-            }
 
             // 1B. Check if this opened app was newly installed (from Play Store or from an APK file) while the block is enabled
             if (!isCoreSystemOrLauncherPackage(packageName)) {
@@ -1423,6 +1379,18 @@ class SelfControlAccessibilityService : AccessibilityService() {
                     ytBlocked = isShortsBlocked,
                     igBlocked = isInstagramReelsBlocked,
                     fbBlocked = isFacebookReelsBlocked
+                )
+            }
+
+            // Check YouTube and Facebook for keyword blocking (search queries, suggestions, titles & content)
+            val isYouTube = RuleEngine.isYouTubePackage(packageName)
+            val isFacebook = RuleEngine.isFacebookPackage(packageName)
+            if (isYouTube || isFacebook) {
+                inspectNodeForYouTubeAndFacebookKeywords(
+                    root = rootNode,
+                    packageName = packageName,
+                    rules = rules,
+                    isAdultBlocked = isAdultBlocked
                 )
             }
 
@@ -1785,6 +1753,10 @@ class SelfControlAccessibilityService : AccessibilityService() {
                 isAdultBlocked = isAdultBlocked
             )
             if (domainEval.isBlocked) {
+                if (domainEval.category == BlockCategory.ADULT) {
+                    // Adult websites are blocked strictly at DNS layer via CleanBrowsing DNS (making website not found) without block screen.
+                    return
+                }
                 triggerIntervention(
                     target = url,
                     ruleType = RuleType.DOMAIN,
@@ -2433,6 +2405,36 @@ class SelfControlAccessibilityService : AccessibilityService() {
         return false
     }
 
+    private fun isSearchPlaceholder(text: String): Boolean {
+        val lower = text.lowercase().trim()
+        if (lower.isBlank() || lower.length <= 1) return true
+        return lower == "search" ||
+                lower == "search youtube" ||
+                lower == "search in youtube" ||
+                lower == "search facebook" ||
+                lower == "search in facebook" ||
+                lower == "search or type url" ||
+                lower == "search..." ||
+                lower == "find on facebook" ||
+                lower == "find in facebook" ||
+                lower == "buscar" ||
+                lower == "rechercher" ||
+                lower == "অনুসন্ধান" ||
+                lower == "খোজ" ||
+                lower == "খুঁজুন" ||
+                lower == "खोजें" ||
+                lower == "buscar en youtube" ||
+                lower == "buscar en facebook" ||
+                lower == "rechercher sur youtube" ||
+                lower == "rechercher sur facebook" ||
+                lower == "what's on your mind?" ||
+                lower.startsWith("what's on your mind") ||
+                lower == "write something..." ||
+                lower == "write a comment..." ||
+                lower == "create a post" ||
+                lower == "write a post"
+    }
+
     private suspend fun inspectNodeForBrowserUrl(
         root: AccessibilityNodeInfo,
         packageName: String,
@@ -2443,6 +2445,7 @@ class SelfControlAccessibilityService : AccessibilityService() {
     ) {
         val candidateUrls = mutableListOf<String>()
         val candidateSearchQueries = mutableListOf<String>()
+        val candidatePageTexts = mutableListOf<String>()
         var isBrowserAtHomeOrNewTab = false
 
         val urlBarIds = listOf(
@@ -2539,6 +2542,8 @@ class SelfControlAccessibilityService : AccessibilityService() {
                     viewId.contains("address") ||
                     viewId.contains("omnibox") ||
                     viewId.contains("search_box") ||
+                    viewId.contains("search") ||
+                    viewId.contains("query") ||
                     lowerText.endsWith("- google search") ||
                     lowerDesc.endsWith("- google search") ||
                     lowerText.endsWith("- bing") ||
@@ -2550,6 +2555,8 @@ class SelfControlAccessibilityService : AccessibilityService() {
                     candidateUrls.add(text)
                 } else if (text.startsWith("http://", ignoreCase = true) || text.startsWith("https://", ignoreCase = true)) {
                     candidateUrls.add(text)
+                } else if (text.length in 3..140) {
+                    candidatePageTexts.add(text)
                 }
             }
             if (desc.isNotBlank() && desc.length >= 2 && !isBrowserHomeOrNewTab(desc)) {
@@ -2558,6 +2565,8 @@ class SelfControlAccessibilityService : AccessibilityService() {
                     candidateUrls.add(desc)
                 } else if (desc.startsWith("http://", ignoreCase = true) || desc.startsWith("https://", ignoreCase = true)) {
                     candidateUrls.add(desc)
+                } else if (desc.length in 3..140) {
+                    candidatePageTexts.add(desc)
                 }
             }
 
@@ -2696,6 +2705,10 @@ class SelfControlAccessibilityService : AccessibilityService() {
                 isAdultBlocked = isAdultBlocked
             )
             if (domainEval.isBlocked) {
+                if (domainEval.category == BlockCategory.ADULT) {
+                    // Adult websites are blocked strictly at DNS layer via CleanBrowsing DNS (making website not found) without block screen.
+                    return
+                }
                 triggerIntervention(
                     target = urlText,
                     ruleType = RuleType.DOMAIN,
@@ -2727,13 +2740,68 @@ class SelfControlAccessibilityService : AccessibilityService() {
             )
             if (searchEval.isBlocked) {
                 triggerIntervention(
-                    target = "Blocked Search Query",
+                    target = "Blocked Search: $txt",
                     ruleType = RuleType.KEYWORD,
                     category = searchEval.category,
                     reason = searchEval.reason,
                     appPackage = packageName
                 )
+                navigateCurrentAppToSafeView(packageName)
                 return
+            }
+        }
+
+        // 4. Also check candidate URLs for query strings containing blocked keywords (e.g. YouTube & Facebook searches in browser)
+        for (urlText in candidateUrls) {
+            if (urlText.contains("?") || urlText.contains("&") || urlText.contains("search") || urlText.contains("results") || urlText.contains("/hashtag/")) {
+                val urlSearchEval = RuleEngine.evaluateSearchQuery(
+                    query = urlText,
+                    isSearchProtectionEnabled = true,
+                    customKeywords = customKeywords,
+                    isTemporaryUnlocked = false,
+                    isAdultBlocked = isAdultBlocked
+                )
+                if (urlSearchEval.isBlocked) {
+                    triggerIntervention(
+                        target = "Blocked Search: $urlText",
+                        ruleType = RuleType.KEYWORD,
+                        category = urlSearchEval.category,
+                        reason = urlSearchEval.reason,
+                        appPackage = packageName
+                    )
+                    navigateCurrentAppToSafeView(packageName)
+                    return
+                }
+            }
+        }
+
+        // 5. When browsing YouTube or Facebook in browser, scan page video titles / posts for blocked keywords
+        val isYouTubeOrFacebookSite = candidateUrls.any { u ->
+            val lower = u.lowercase()
+            lower.contains("youtube.com") || lower.contains("facebook.com")
+        }
+        if (isYouTubeOrFacebookSite) {
+            for (pageText in candidatePageTexts) {
+                if (!isSearchPlaceholder(pageText)) {
+                    val pageEval = RuleEngine.evaluateSearchQuery(
+                        query = pageText,
+                        isSearchProtectionEnabled = true,
+                        customKeywords = customKeywords,
+                        isTemporaryUnlocked = false,
+                        isAdultBlocked = isAdultBlocked
+                    )
+                    if (pageEval.isBlocked) {
+                        triggerIntervention(
+                            target = "Blocked Web Content: ${pageText.take(50)}",
+                            ruleType = RuleType.KEYWORD,
+                            category = pageEval.category,
+                            reason = pageEval.reason,
+                            appPackage = packageName
+                        )
+                        navigateCurrentAppToSafeView(packageName)
+                        return
+                    }
+                }
             }
         }
     }
@@ -2745,6 +2813,7 @@ class SelfControlAccessibilityService : AccessibilityService() {
         reason: String,
         appPackage: String? = null
     ) {
+        if (category == BlockCategory.ADULT && ruleType != RuleType.KEYWORD) return
         if (isReclaimInForegroundOrPopup()) return
         triggerIntervention(
             target = target,
@@ -2790,6 +2859,9 @@ class SelfControlAccessibilityService : AccessibilityService() {
         appPackage: String? = null,
         bypassCooldown: Boolean = false
     ) {
+        if (category == BlockCategory.ADULT && ruleType != RuleType.KEYWORD) {
+            return
+        }
         if (isReclaimInForegroundOrPopup()) {
             return
         }
@@ -2835,6 +2907,139 @@ class SelfControlAccessibilityService : AccessibilityService() {
                 try {
                     performGlobalAction(GLOBAL_ACTION_HOME)
                 } catch (_: Throwable) {}
+            }
+        }
+    }
+
+    /**
+     * Inspects YouTube and Facebook app accessibility node hierarchy for search queries,
+     * suggestions, and content containing blocked keywords (both custom user keywords and adult keywords).
+     */
+    private fun inspectNodeForYouTubeAndFacebookKeywords(
+        root: AccessibilityNodeInfo,
+        packageName: String,
+        rules: List<com.example.data.model.BlockRule>,
+        isAdultBlocked: Boolean
+    ) {
+        val customKeywords = rules.filter { it.enabled && it.type == RuleType.KEYWORD }.map { it.target }
+        if (customKeywords.isEmpty() && !isAdultBlocked) {
+            return
+        }
+
+        val isYT = RuleEngine.isYouTubePackage(packageName)
+        val isFB = RuleEngine.isFacebookPackage(packageName)
+        if (!isYT && !isFB) return
+
+        val candidateSearchQueries = mutableListOf<String>()
+        val candidateContentTexts = mutableListOf<String>()
+
+        val queue = ArrayDeque<AccessibilityNodeInfo>()
+        queue.add(root)
+        var count = 0
+
+        while (queue.isNotEmpty() && count < 100) {
+            val node = queue.removeFirst()
+            count++
+
+            val text = node.text?.toString()?.trim() ?: ""
+            val desc = node.contentDescription?.toString()?.trim() ?: ""
+            val className = node.className?.toString() ?: ""
+            val viewId = node.viewIdResourceName?.lowercase() ?: ""
+
+            val isSearchBox = className.contains("EditText", ignoreCase = true) ||
+                    node.safeIsEditable() ||
+                    viewId.contains("search_edit_text") ||
+                    viewId.contains("search_query") ||
+                    viewId.contains("search_box") ||
+                    viewId.contains("search_bar") ||
+                    viewId.contains("search_input") ||
+                    viewId.contains("search_src_text") ||
+                    viewId.contains("search_plate") ||
+                    viewId.contains("search_view") ||
+                    viewId.contains("query")
+
+            val isSuggestion = viewId.contains("suggestion") ||
+                    viewId.contains("search_type_selector") ||
+                    viewId.contains("history_item")
+
+            val isTitleOrContent = viewId.contains("title") ||
+                    viewId.contains("video_title") ||
+                    viewId.contains("caption") ||
+                    viewId.contains("description") ||
+                    viewId.contains("post_text") ||
+                    viewId.contains("message") ||
+                    viewId.contains("story") ||
+                    viewId.contains("feed_story")
+
+            if (text.isNotBlank() && text.length >= 2 && !isSearchPlaceholder(text)) {
+                if (isSearchBox || isSuggestion) {
+                    candidateSearchQueries.add(text)
+                } else if (isTitleOrContent) {
+                    candidateContentTexts.add(text)
+                } else if (text.length in 3..140) {
+                    candidateContentTexts.add(text)
+                }
+            }
+
+            if (desc.isNotBlank() && desc.length >= 2 && !isSearchPlaceholder(desc)) {
+                if (isSearchBox || isSuggestion) {
+                    candidateSearchQueries.add(desc)
+                } else if (isTitleOrContent) {
+                    candidateContentTexts.add(desc)
+                } else if (desc.length in 3..140) {
+                    candidateContentTexts.add(desc)
+                }
+            }
+
+            for (i in 0 until node.childCount) {
+                val child = node.getChild(i)
+                if (child != null) queue.add(child)
+            }
+        }
+
+        val appLabel = if (isYT) "YouTube" else "Facebook"
+
+        // 1. Evaluate candidate search queries first (highest priority for search terms typed or suggested)
+        for (queryText in candidateSearchQueries) {
+            val searchEval = RuleEngine.evaluateSearchQuery(
+                query = queryText,
+                isSearchProtectionEnabled = true,
+                customKeywords = customKeywords,
+                isTemporaryUnlocked = false,
+                isAdultBlocked = isAdultBlocked
+            )
+            if (searchEval.isBlocked) {
+                triggerIntervention(
+                    target = "$appLabel: $queryText",
+                    ruleType = RuleType.KEYWORD,
+                    category = searchEval.category,
+                    reason = searchEval.reason,
+                    appPackage = packageName
+                )
+                navigateCurrentAppToSafeView(packageName)
+                return
+            }
+        }
+
+        // 2. Evaluate candidate content titles / items (e.g. video titles or post texts)
+        for (contentText in candidateContentTexts) {
+            val searchEval = RuleEngine.evaluateSearchQuery(
+                query = contentText,
+                isSearchProtectionEnabled = true,
+                customKeywords = customKeywords,
+                isTemporaryUnlocked = false,
+                isAdultBlocked = isAdultBlocked
+            )
+            if (searchEval.isBlocked) {
+                triggerIntervention(
+                    target = "$appLabel Content: ${contentText.take(50)}",
+                    ruleType = RuleType.KEYWORD,
+                    category = searchEval.category,
+                    reason = searchEval.reason,
+                    appPackage = packageName
+                )
+                navigateCurrentAppToSafeView(packageName)
+                return
             }
         }
     }
