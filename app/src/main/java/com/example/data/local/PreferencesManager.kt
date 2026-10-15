@@ -174,7 +174,7 @@ class PreferencesManager(private val context: Context) {
         private set
     @Volatile var cachedAccessibilityEnabled: Boolean = true
         private set
-    @Volatile var cachedAdultContentBlocked: Boolean = false
+    @Volatile var cachedAdultContentBlocked: Boolean = syncPrefs.getBoolean("adult_content_blocked", true)
         private set
     @Volatile var cachedImageVideoSearchBlocked: Boolean = false
         private set
@@ -265,7 +265,7 @@ class PreferencesManager(private val context: Context) {
                     cachedMasterProtection = prefs[KEY_MASTER_PROTECTION] ?: true
                     cachedVpnEnabled = prefs[KEY_VPN_ENABLED] ?: true
                     cachedAccessibilityEnabled = prefs[KEY_ACCESSIBILITY_ENABLED] ?: true
-                    cachedAdultContentBlocked = prefs[KEY_ADULT_CONTENT_BLOCKED] ?: false
+                    cachedAdultContentBlocked = prefs[KEY_ADULT_CONTENT_BLOCKED] ?: true
                     cachedImageVideoSearchBlocked = prefs[KEY_IMAGE_VIDEO_SEARCH_BLOCKED] ?: false
                     cachedGoogleLensBlocked = prefs[KEY_GOOGLE_LENS_BLOCKED] ?: false
                     cachedYoutubeShortsBlocked = prefs[KEY_YOUTUBE_SHORTS_BLOCKED] ?: false
@@ -447,7 +447,7 @@ class PreferencesManager(private val context: Context) {
 
     // New flows
     val adultContentBlocked: Flow<Boolean> = context.dataStore.data.map { prefs ->
-        prefs[KEY_ADULT_CONTENT_BLOCKED] ?: false
+        prefs[KEY_ADULT_CONTENT_BLOCKED] ?: true
     }
 
     val imageVideoSearchBlocked: Flow<Boolean> = context.dataStore.data.map { prefs ->
@@ -710,7 +710,9 @@ class PreferencesManager(private val context: Context) {
     }
 
     suspend fun setAdultContentBlocked(blocked: Boolean) {
+        cachedAdultContentBlocked = blocked
         context.dataStore.edit { it[KEY_ADULT_CONTENT_BLOCKED] = blocked }
+        try { syncPrefs.edit().putBoolean("adult_content_blocked", blocked).apply() } catch (_: Throwable) {}
     }
 
     suspend fun setImageVideoSearchBlocked(blocked: Boolean) {

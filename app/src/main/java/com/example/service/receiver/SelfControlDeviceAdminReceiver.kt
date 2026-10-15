@@ -23,7 +23,12 @@ class SelfControlDeviceAdminReceiver : DeviceAdminReceiver() {
         var lastAdminEnabledTimeMs: Long = 0L
 
         fun isRecentlyEnabled(windowMs: Long = 4000L): Boolean {
-            val elapsed = SystemClock.uptimeMillis() - lastAdminEnabledTimeMs
+            val now = try {
+                SystemClock.uptimeMillis()
+            } catch (_: Throwable) {
+                System.currentTimeMillis()
+            }
+            val elapsed = now - lastAdminEnabledTimeMs
             return lastAdminEnabledTimeMs > 0L && elapsed in 0L..windowMs
         }
 

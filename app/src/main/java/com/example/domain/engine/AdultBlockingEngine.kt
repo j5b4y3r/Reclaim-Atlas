@@ -25,12 +25,17 @@ import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * 3-Layer Adult Content Blocking Engine:
- * - Layer 1: DNS-level filtering via Cloudflare Family DNS (1.1.1.3 / 1.0.0.3 & family.cloudflare-dns.com)
+ * - Layer 1: DNS-level filtering via CleanBrowsing Adult Filter DNS (adult-filter-dns.cleanbrowsing.org: 185.228.168.10 / 185.228.169.11) with Cloudflare Family DNS (1.1.1.3 / 1.0.0.3) fallback & SafeSearch enforcement
  * - Layer 2: 500,000+ blocked adult domains (Local Room SQLite database + high-speed in-memory hash set + structural 500k+ adult domain signature engine)
  * - Layer 3: Browser & Search App keyword + URL/content scanning
  */
 object AdultBlockingEngine {
     private const val TAG = "AdultBlockingEngine"
+
+    const val CLEANBROWSING_ADULT_DNS_PRIMARY = "185.228.168.10"
+    const val CLEANBROWSING_ADULT_DNS_SECONDARY = "185.228.169.11"
+    const val CLEANBROWSING_ADULT_DNS_HOST = "adult-filter-dns.cleanbrowsing.org"
+    const val CLEANBROWSING_ADULT_DOH_URL = "https://doh.cleanbrowsing.org/doh/adult-filter/"
 
     const val CLOUDFLARE_FAMILY_DNS_PRIMARY = "1.1.1.3"
     const val CLOUDFLARE_FAMILY_DNS_SECONDARY = "1.0.0.3"
@@ -336,8 +341,8 @@ object AdultBlockingEngine {
     /**
      * Layer 1 + Layer 2 Combined Asynchronous Check:
      * First runs the fast synchronous Layer 2 check (500k+ local database & structural engine).
-     * If not matched locally, queries Layer 1: Cloudflare Family DNS (1.1.1.3 / 1.0.0.3 / DoH)
-     * to check if Cloudflare's global adult filter sinkholes the domain to 0.0.0.0.
+     * If not matched locally, queries Layer 1: CleanBrowsing Adult Filter DNS (adult-filter-dns.cleanbrowsing.org: 185.228.168.10 / 185.228.169.11)
+     * and Cloudflare Family DNS (1.1.1.3 / 1.0.0.3 / DoH) to verify if the global DNS filter blocks the domain.
      */
     suspend fun isAdultDomainMultiLayer(rawDomainOrUrl: String): Boolean {
         val normalized = RuleEngine.normalizeDomain(rawDomainOrUrl)
@@ -362,11 +367,11 @@ object AdultBlockingEngine {
             } catch (_: Exception) {}
         }
 
-        // Layer 1: Query Cloudflare Family DNS (1.1.1.3 / 1.0.0.3)
-        val blockedByCloudflare = checkDomainWithCloudflareFamilyDns(normalized)
-        if (blockedByCloudflare) {
+        // Layer 1: Query CleanBrowsing Adult Filter DNS (185.228.168.10 / 185.228.169.11) with Cloudflare Family fallback
+        val blockedByDns = checkDomainWithCleanBrowsingDns(normalized)
+        if (blockedByDns) {
             dnsVerifiedAdultDomains.add(normalized)
-            rememberAdultDomain(normalized, "cloudflare_family_dns")
+            rememberAdultDomain(normalized, "cleanbrowsing_adult_dns")
             return true
         } else {
             dnsVerifiedSafeDomains.add(normalized)
@@ -376,35 +381,41 @@ object AdultBlockingEngine {
     }
 
     /**
-     * Queries Cloudflare Family DNS (1.1.1.3 and 1.0.0.3) via UDP port 53 (and HTTPS DoH fallback)
-     * to check if the domain resolves to 0.0.0.0 (Cloudflare Family DNS adult content sinkhole).
+     * Queries CleanBrowsing Adult Filter DNS (185.228.168.10 and 185.228.169.11) via UDP port 53 (and HTTPS DoH fallback),
+     * followed by Cloudflare Family DNS (1.1.1.3 / 1.0.0.3), to check if the domain is filtered as adult/unsafe.
      */
-    suspend fun checkDomainWithCloudflareFamilyDns(domain: String): Boolean = withContext(Dispatchers.IO) {
+    suspend fun checkDomainWithCleanBrowsingDns(domain: String): Boolean = withContext(Dispatchers.IO) {
         val clean = RuleEngine.normalizeDomain(domain)
         if (clean.isBlank() || !clean.contains('.')) return@withContext false
 
-        // 1. Try fast UDP DNS query to 1.1.1.3:53 (and 1.0.0.3:53)
-        val udpResult = withTimeoutOrNull(650L) {
-            queryCloudflareUdp(clean, CLOUDFLARE_FAMILY_DNS_PRIMARY)
-                ?: queryCloudflareUdp(clean, CLOUDFLARE_FAMILY_DNS_SECONDARY)
+        // 1. Try fast UDP DNS query to CleanBrowsing Primary (185.228.168.10), Secondary (185.228.169.11), then Cloudflare (1.1.1.3)
+        val udpResult = withTimeoutOrNull(850L) {
+            queryDnsUdp(clean, CLEANBROWSING_ADULT_DNS_PRIMARY)
+                ?: queryDnsUdp(clean, CLEANBROWSING_ADULT_DNS_SECONDARY)
+                ?: queryDnsUdp(clean, CLOUDFLARE_FAMILY_DNS_PRIMARY)
+                ?: queryDnsUdp(clean, CLOUDFLARE_FAMILY_DNS_SECONDARY)
         }
         if (udpResult != null) {
             return@withContext udpResult
         }
 
-        // 2. Fallback to Cloudflare Family DNS-over-HTTPS (DoH) if UDP 53 is blocked/filtered
-        val dohResult = withTimeoutOrNull(900L) {
-            queryCloudflareDoh(clean)
+        // 2. Fallback to CleanBrowsing DNS-over-HTTPS (DoH) and Cloudflare DoH
+        val dohResult = withTimeoutOrNull(950L) {
+            queryCleanBrowsingDoh(clean) ?: queryCloudflareDoh(clean)
         }
         dohResult ?: false
     }
 
-    private fun queryCloudflareUdp(domain: String, dnsServerIp: String): Boolean? {
+    suspend fun checkDomainWithCloudflareFamilyDns(domain: String): Boolean = withContext(Dispatchers.IO) {
+        checkDomainWithCleanBrowsingDns(domain)
+    }
+
+    private fun queryDnsUdp(domain: String, dnsServerIp: String): Boolean? {
         var socket: DatagramSocket? = null
         return try {
             val queryPacketBytes = buildDnsARecordQuery(domain)
             socket = DatagramSocket()
-            socket.soTimeout = 500
+            socket.soTimeout = 600
             val serverAddr = InetAddress.getByName(dnsServerIp)
             val outPacket = DatagramPacket(queryPacketBytes, queryPacketBytes.size, serverAddr, 53)
             socket.send(outPacket)
@@ -413,12 +424,41 @@ object AdultBlockingEngine {
             val inPacket = DatagramPacket(responseBuf, responseBuf.size)
             socket.receive(inPacket)
 
-            isCloudflareBlockedDnsResponse(responseBuf, inPacket.length)
+            isDnsBlockedResponse(responseBuf, inPacket.length, domain)
         } catch (_: Exception) {
             null
         } finally {
             try {
                 socket?.close()
+            } catch (_: Exception) {}
+        }
+    }
+
+    private fun queryCleanBrowsingDoh(domain: String): Boolean? {
+        var conn: HttpURLConnection? = null
+        return try {
+            val queryWire = buildDnsARecordQuery(domain)
+            val url = URL(CLEANBROWSING_ADULT_DOH_URL)
+            conn = (url.openConnection() as HttpURLConnection).apply {
+                requestMethod = "POST"
+                doOutput = true
+                setRequestProperty("Content-Type", "application/dns-message")
+                setRequestProperty("Accept", "application/dns-message")
+                connectTimeout = 750
+                readTimeout = 750
+            }
+            conn.outputStream.use { it.write(queryWire) }
+            if (conn.responseCode == 200) {
+                val respBytes = conn.inputStream.use { it.readBytes() }
+                isDnsBlockedResponse(respBytes, respBytes.size, domain)
+            } else {
+                null
+            }
+        } catch (_: Exception) {
+            null
+        } finally {
+            try {
+                conn?.disconnect()
             } catch (_: Exception) {}
         }
     }
@@ -453,34 +493,48 @@ object AdultBlockingEngine {
     }
 
     /**
-     * Inspects a raw DNS response payload from Cloudflare Family DNS (1.1.1.3 / 1.0.0.3).
-     * Cloudflare Family DNS blocks adult domains by returning an A record of 0.0.0.0
-     * (4 zero bytes at the end of an Type=A, Class=IN, RDLENGTH=4 answer record).
+     * Inspects a raw DNS response payload from CleanBrowsing Adult Filter DNS or Cloudflare Family DNS.
+     * Detects:
+     * 1. 0.0.0.0 or 127.0.0.1 sinkhole IP in Answer section (Cloudflare / CleanBrowsing)
+     * 2. RCODE = 3 (NXDOMAIN) returned by CleanBrowsing Adult Filter
      */
-    fun isCloudflareBlockedDnsResponse(dnsPayload: ByteArray, length: Int): Boolean {
+    fun isDnsBlockedResponse(dnsPayload: ByteArray, length: Int, domain: String = ""): Boolean {
         try {
             if (length < 12) return false
+            val flags = ((dnsPayload[2].toInt() and 0xFF) shl 8) or (dnsPayload[3].toInt() and 0xFF)
+            val rcode = flags and 0x0F
             val anCount = ((dnsPayload[6].toInt() and 0xFF) shl 8) or (dnsPayload[7].toInt() and 0xFF)
-            if (anCount <= 0) return false
 
-            // Scan answer records for Type A (0x00, 0x01), Class IN (0x00, 0x01), RDLENGTH 4 (0x00, 0x04), RDATA 0.0.0.0 (0, 0, 0, 0)
-            for (i in 12..(length - 14)) {
-                if (dnsPayload[i].toInt() == 0x00 &&
-                    dnsPayload[i + 1].toInt() == 0x01 && // Type A
-                    dnsPayload[i + 2].toInt() == 0x00 &&
-                    dnsPayload[i + 3].toInt() == 0x01 && // Class IN
-                    dnsPayload[i + 8].toInt() == 0x00 &&
-                    dnsPayload[i + 9].toInt() == 0x04 && // RDLENGTH = 4
-                    dnsPayload[i + 10].toInt() == 0 &&
-                    dnsPayload[i + 11].toInt() == 0 &&
-                    dnsPayload[i + 12].toInt() == 0 &&
-                    dnsPayload[i + 13].toInt() == 0      // 0.0.0.0 sinkhole IP
-                ) {
-                    return true
+            // 1. Scan answer records for Type A (0x0001), Class IN (0x0001), RDLENGTH 4 (0x0004), RDATA 0.0.0.0 or 127.0.0.1
+            if (anCount > 0) {
+                for (i in 12..(length - 14)) {
+                    if (dnsPayload[i].toInt() == 0x00 &&
+                        dnsPayload[i + 1].toInt() == 0x01 && // Type A
+                        dnsPayload[i + 2].toInt() == 0x00 &&
+                        dnsPayload[i + 3].toInt() == 0x01 && // Class IN
+                        dnsPayload[i + 8].toInt() == 0x00 &&
+                        dnsPayload[i + 9].toInt() == 0x04   // RDLENGTH = 4
+                    ) {
+                        val b0 = dnsPayload[i + 10].toInt() and 0xFF
+                        val b1 = dnsPayload[i + 11].toInt() and 0xFF
+                        val b2 = dnsPayload[i + 12].toInt() and 0xFF
+                        val b3 = dnsPayload[i + 13].toInt() and 0xFF
+                        if (b0 == 0 && b1 == 0 && b2 == 0 && b3 == 0) return true
+                        if (b0 == 127 && b1 == 0 && b2 == 0 && b3 == 1) return true
+                    }
                 }
+            }
+
+            // 2. CleanBrowsing Adult Filter blocks adult websites by returning RCODE = 3 (NXDOMAIN)
+            if (rcode == 3) {
+                return true
             }
         } catch (_: Exception) {}
         return false
+    }
+
+    fun isCloudflareBlockedDnsResponse(dnsPayload: ByteArray, length: Int): Boolean {
+        return isDnsBlockedResponse(dnsPayload, length)
     }
 
     private fun buildDnsARecordQuery(domain: String): ByteArray {

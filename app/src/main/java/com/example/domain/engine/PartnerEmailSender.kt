@@ -38,13 +38,13 @@ object PartnerEmailSender {
     fun getConfiguredSenderEmail(): String {
         return try {
             val email = BuildConfig.SMTP_EMAIL
-            if (!email.isNullOrBlank() && email.contains("@")) {
+            if (!email.isNullOrBlank() && email.contains("@") && !email.equals(SERVER_SENDER_EMAIL, ignoreCase = true)) {
                 normalizeSenderEmail(email)
             } else {
-                SERVER_SENDER_EMAIL
+                DEFAULT_SENDER_EMAIL
             }
         } catch (_: Exception) {
-            SERVER_SENDER_EMAIL
+            DEFAULT_SENDER_EMAIL
         }
     }
 

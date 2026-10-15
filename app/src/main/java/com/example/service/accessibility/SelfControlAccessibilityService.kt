@@ -1797,6 +1797,21 @@ class SelfControlAccessibilityService : AccessibilityService() {
                     appPackage = packageName
                 )
                 return
+            } else if (isAdultBlocked) {
+                val cleanDomain = RuleEngine.normalizeDomain(url)
+                if (cleanDomain.contains('.') && !RuleEngine.isKnownSearchEngine(cleanDomain)) {
+                    serviceScope.launch {
+                        if (com.example.domain.engine.AdultBlockingEngine.isAdultDomainMultiLayer(cleanDomain)) {
+                            triggerIntervention(
+                                target = url,
+                                ruleType = RuleType.DOMAIN,
+                                category = BlockCategory.ADULT,
+                                reason = "Adult website blocked (CleanBrowsing DNS Filter)",
+                                appPackage = packageName
+                            )
+                        }
+                    }
+                }
             }
         }
 
@@ -2699,6 +2714,22 @@ class SelfControlAccessibilityService : AccessibilityService() {
                     appPackage = packageName
                 )
                 return
+            } else if (isAdultBlocked) {
+                // Layer 1 DNS Check against CleanBrowsing Adult Filter DNS (adult-filter-dns.cleanbrowsing.org)
+                val cleanDomain = RuleEngine.normalizeDomain(urlText)
+                if (cleanDomain.contains('.') && !RuleEngine.isKnownSearchEngine(cleanDomain)) {
+                    serviceScope.launch {
+                        if (com.example.domain.engine.AdultBlockingEngine.isAdultDomainMultiLayer(cleanDomain)) {
+                            triggerIntervention(
+                                target = urlText,
+                                ruleType = RuleType.DOMAIN,
+                                category = BlockCategory.ADULT,
+                                reason = "Adult website blocked (CleanBrowsing DNS Filter)",
+                                appPackage = packageName
+                            )
+                        }
+                    }
+                }
             }
         }
 

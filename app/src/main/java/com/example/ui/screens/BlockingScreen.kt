@@ -293,7 +293,7 @@ fun BlockingScreen(
             ) {
                 AdvancedToggleItem(
                     title = "Block Adult Content",
-                    description = "3-Layer Filter: Cloudflare Family DNS, 500,000+ adult domain DB & browser keyword scanning",
+                    description = "3-Layer Filter: CleanBrowsing Adult DNS Filter, 500,000+ adult domain DB & browser keyword scanning",
                     checked = adultBlocked,
                     hasPendingEmailCode = activePartnerRequests.containsKey("FILTER_ADULT_CONTENT"),
                     onOpenPendingCode = {

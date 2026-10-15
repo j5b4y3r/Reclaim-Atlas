@@ -219,7 +219,7 @@ object RuleEngine {
 
     /**
      * Multi-layer asynchronous domain evaluation (combines Layer 2 local 500,000+ adult domain DB
-     * + Layer 1 Cloudflare Family DNS 1.1.1.3 / 1.0.0.3 verification).
+     * + Layer 1 CleanBrowsing Adult Filter DNS 185.228.168.10 / 185.228.169.11 & Cloudflare Family DNS verification).
      */
     suspend fun evaluateDomainMultiLayer(
         domain: String,
@@ -1110,6 +1110,7 @@ object RuleEngine {
             "com.sec.android.app.samsungapps"
         )
         val isSettingsOrAccPkg = settingsPackages.contains(packageName) ||
+                packageName == "android" ||
                 packageName.contains("accessibility", ignoreCase = true) ||
                 packageName.contains("settings", ignoreCase = true) ||
                 packageName.contains("packageinstaller", ignoreCase = true) ||
@@ -1247,7 +1248,8 @@ object RuleEngine {
                 !combined.contains("deactivate") && !combined.contains("force stop")
 
         // 1. Double layer: Block "Device admin apps" list page and Reclaim's Device Admin page
-        val isDeviceAdminAppsScreen = canEnforceTamper && !isInitialAdminActivation && !isGeneralPermissionOrSpecialAccessList && (
+        val isDeviceAdminAppsScreen = canEnforceTamper && !isInitialAdminActivation && !isGeneralPermissionOrSpecialAccessList &&
+                !viewId.endsWith(":id/list") && !viewId.endsWith("/list") && (
                 combined.contains("device admin apps") ||
                 combined.contains("device admin app") ||
                 combined.contains("device administrators") ||
@@ -1390,7 +1392,7 @@ object RuleEngine {
         )
 
         // Block updating / downgrading / reinstalling Reclaim (via package installer, file manager, etc.)
-        val isReclaimUpdateAction = canEnforceUninstall && isTargetingReclaim && (
+        val isReclaimUpdateAction = canEnforceUninstall && isTargetingReclaim && !isGeneralAccessibilityListPage && (
             combined.contains("install") ||
             combined.contains("update") ||
             combined.contains("replace") ||
