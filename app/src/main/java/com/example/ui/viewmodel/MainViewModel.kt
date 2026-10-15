@@ -609,7 +609,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
         viewModelScope.launch {
             prefs.setAdultContentBlocked(blocked)
-            if (blocked) repository.clearPartnerRequestForAction(actionKey)
+            if (blocked) {
+                repository.clearPartnerRequestForAction(actionKey)
+                com.example.util.PermissionHelper.tryApplyCleanBrowsingPrivateDns(getApplication())
+            }
         }
     }
 

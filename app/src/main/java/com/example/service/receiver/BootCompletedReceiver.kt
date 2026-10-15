@@ -44,11 +44,9 @@ class BootCompletedReceiver : BroadcastReceiver() {
                     } catch (_: Throwable) {
                         prefs.cachedVpnEnabled
                     }
-
-                    if (masterProtection && vpnEnabled && !SelfControlVpnService.isRunning) {
-                        if (VpnService.prepare(context) == null) {
-                            SelfControlVpnService.startVpn(context)
-                        }
+                    val adultBlocked = prefs.cachedAdultContentBlocked
+                    if (masterProtection && adultBlocked) {
+                        com.example.util.PermissionHelper.tryApplyCleanBrowsingPrivateDns(context)
                     }
                 } catch (e: Throwable) {
                     Log.w("BootCompletedReceiver", "Autostart on boot error: ${e.message}")

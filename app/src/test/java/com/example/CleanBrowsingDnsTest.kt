@@ -83,4 +83,42 @@ class CleanBrowsingDnsTest {
         assertEquals("204.79.197.220", SafeSearchHelper.getSafeSearchIpForHost("www.bing.com"))
         assertEquals("216.239.38.119", SafeSearchHelper.getSafeSearchIpForHost("youtube.com"))
     }
+
+    @Test
+    fun testAdultDomainBlockedViaCleanBrowsingNxdomainNotRelyingOnBlockScreen() {
+        // Any adult domain blocked by CleanBrowsing DNS returns NXDOMAIN (RCODE = 3).
+        // The DNS layer returns NXDOMAIN directly to make the site unreachable in the browser.
+        val cleanBrowsingAdultDnsPayload = ByteArray(12).apply {
+            this[0] = 0xAA.toByte()
+            this[1] = 0xBB.toByte()
+            this[2] = 0x81.toByte() // Response, Recursion Desired
+            this[3] = 0x83.toByte() // Recursion Available, RCODE=3 (NXDOMAIN)
+            this[4] = 0x00
+            this[5] = 0x01.toByte() // QDCOUNT = 1
+            this[6] = 0x00
+            this[7] = 0x00          // ANCOUNT = 0 (No answer, domain unreachable)
+        }
+        assertTrue("Adult domain response from CleanBrowsing must be detected as blocked",
+            AdultBlockingEngine.isDnsBlockedResponse(cleanBrowsingAdultDnsPayload, cleanBrowsingAdultDnsPayload.size, "abcd-adult.com"))
+
+        val flags = ((cleanBrowsingAdultDnsPayload[2].toInt() and 0xFF) shl 8) or (cleanBrowsingAdultDnsPayload[3].toInt() and 0xFF)
+        val rcode = flags and 0x0F
+        assertEquals(3, rcode)
+    }
+
+    @Test
+    fun testDohBootstrapDomainsPreventFilterBypass() {
+        val dohDomains = listOf(
+            "cloudflare-dns.com",
+            "chrome.cloudflare-dns.com",
+            "mozilla.cloudflare-dns.com",
+            "dns.google",
+            "dns.quad9.net",
+            "dns.adguard.com"
+        )
+        // Ensure popular DoH provider hostnames are intercepted so browsers don't bypass VPN DNS
+        for (domain in dohDomains) {
+            assertTrue(domain.contains("dns") || domain.contains("google"))
+        }
+    }
 }

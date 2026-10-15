@@ -13,6 +13,7 @@ import android.text.TextUtils
 import android.util.Log
 import com.example.service.accessibility.SelfControlAccessibilityService
 import com.example.service.receiver.SelfControlDeviceAdminReceiver
+import com.example.service.vpn.SelfControlVpnService
 
 object PermissionHelper {
 
@@ -294,6 +295,83 @@ object PermissionHelper {
                 } catch (_: Exception) {}
             }
         }
+    }
+
+    const val CLEANBROWSING_DNS_HOST = "adult-filter-dns.cleanbrowsing.org"
+
+    fun isCleanBrowsingDnsActive(context: Context): Boolean {
+        try {
+            val specifier = Settings.Global.getString(context.contentResolver, "private_dns_specifier")
+            if (specifier?.contains("cleanbrowsing.org", ignoreCase = true) == true) {
+                return true
+            }
+        } catch (_: Throwable) {}
+        return false
+    }
+
+    fun tryApplyCleanBrowsingPrivateDns(context: Context): Boolean {
+        // Method 1: Settings.Global (works if WRITE_SECURE_SETTINGS is granted)
+        try {
+            val applied = Settings.Global.putString(context.contentResolver, "private_dns_mode", "hostname") &&
+                    Settings.Global.putString(context.contentResolver, "private_dns_specifier", CLEANBROWSING_DNS_HOST)
+            if (applied) return true
+        } catch (_: Throwable) {}
+
+        // Method 2: Device Owner / Device Policy Manager
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            try {
+                val dpm = context.getSystemService(Context.DEVICE_POLICY_SERVICE) as? DevicePolicyManager
+                val admin = ComponentName(context, SelfControlDeviceAdminReceiver::class.java)
+                if (dpm != null && dpm.isAdminActive(admin)) {
+                    dpm.setGlobalPrivateDnsModeSpecifiedHost(admin, CLEANBROWSING_DNS_HOST)
+                    return true
+                }
+            } catch (_: Throwable) {}
+        }
+
+        // Method 3: Direct shell / su if available
+        try {
+            val process = Runtime.getRuntime().exec(
+                arrayOf("su", "-c", "settings put global private_dns_mode hostname && settings put global private_dns_specifier $CLEANBROWSING_DNS_HOST")
+            )
+            val exitCode = process.waitFor()
+            if (exitCode == 0) return true
+        } catch (_: Throwable) {}
+
+        return false
+    }
+
+    /**
+     * Directly adds and activates CleanBrowsing DNS via the Reclaim app.
+     * First attempts direct system DNS assignment (via system settings, DevicePolicy, or shell).
+     * If system restricts direct writes, automatically initializes Reclaim's on-device CleanBrowsing DNS filter.
+     */
+    fun activateCleanBrowsingDnsViaReclaim(
+        context: Context,
+        onRequireSystemConsent: (Intent) -> Unit,
+        onActivated: () -> Unit
+    ) {
+        val directSystemSuccess = tryApplyCleanBrowsingPrivateDns(context)
+        if (directSystemSuccess) {
+            onActivated()
+            return
+        }
+
+        val vpnIntent = getVpnPrepareIntent(context)
+        if (vpnIntent != null) {
+            onRequireSystemConsent(vpnIntent)
+        } else {
+            SelfControlVpnService.startVpn(context)
+            onActivated()
+        }
+    }
+
+    fun isVpnPrepared(context: Context): Boolean {
+        return android.net.VpnService.prepare(context) == null
+    }
+
+    fun getVpnPrepareIntent(context: Context): Intent? {
+        return android.net.VpnService.prepare(context)
     }
 }
 

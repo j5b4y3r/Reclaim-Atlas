@@ -84,13 +84,8 @@ class SelfControlApp : Application() {
                     try {
                         preferences.ensureNewAppsBaselineInitialized()
                         preferences.checkAndExpireUninstallProtection()
-                        if (preferences.cachedMasterProtection &&
-                            preferences.cachedVpnEnabled &&
-                            !com.example.service.vpn.SelfControlVpnService.isRunning
-                        ) {
-                            if (android.net.VpnService.prepare(this@SelfControlApp) == null) {
-                                com.example.service.vpn.SelfControlVpnService.startVpn(this@SelfControlApp)
-                            }
+                        if (preferences.cachedMasterProtection && preferences.cachedAdultContentBlocked) {
+                            com.example.util.PermissionHelper.tryApplyCleanBrowsingPrivateDns(this@SelfControlApp)
                         }
                     } catch (_: Throwable) {}
                 }

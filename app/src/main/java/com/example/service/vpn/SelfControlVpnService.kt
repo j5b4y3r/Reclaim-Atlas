@@ -86,11 +86,24 @@ class SelfControlVpnService : VpnService() {
     private val upstreamDnsAddresses: List<InetAddress> by lazy {
         listOf(
             InetAddress.getByName(CLEANBROWSING_PRIMARY_IP),
-            InetAddress.getByName(CLEANBROWSING_SECONDARY_IP),
-            InetAddress.getByName(CLOUDFLARE_PRIMARY_IP),
-            InetAddress.getByName(CLOUDFLARE_SECONDARY_IP)
+            InetAddress.getByName(CLEANBROWSING_SECONDARY_IP)
         )
     }
+
+    private val DOH_BOOTSTRAP_DOMAINS = setOf(
+        "cloudflare-dns.com",
+        "chrome.cloudflare-dns.com",
+        "mozilla.cloudflare-dns.com",
+        "security.cloudflare-dns.com",
+        "family.cloudflare-dns.com",
+        "dns.google",
+        "dns.google.com",
+        "dns.quad9.net",
+        "dns.adguard.com",
+        "dns-family.adguard.com",
+        "doh.opendns.com",
+        "dns.nextdns.io"
+    )
 
     override fun onCreate() {
         super.onCreate()
@@ -138,21 +151,22 @@ class SelfControlVpnService : VpnService() {
                 // Primary: CleanBrowsing Adult Filter DNS (blocks adult websites and enforces SafeSearch)
                 .addDnsServer(CLEANBROWSING_PRIMARY_IP)
                 .addDnsServer(CLEANBROWSING_SECONDARY_IP)
-                // Secondary fallback: Cloudflare Family DNS
-                .addDnsServer(CLOUDFLARE_PRIMARY_IP)
-                .addDnsServer(CLOUDFLARE_SECONDARY_IP)
-                // Route DNS servers through tunnel so their port 53 packets are captured
+                // Route CleanBrowsing DNS servers through tunnel so their port 53 packets are captured
                 .addRoute(CLEANBROWSING_PRIMARY_IP, 32)
                 .addRoute(CLEANBROWSING_SECONDARY_IP, 32)
-                .addRoute(CLOUDFLARE_PRIMARY_IP, 32)
-                .addRoute(CLOUDFLARE_SECONDARY_IP, 32)
                 // Intercept popular public DNS resolvers to prevent bypass
                 .addRoute("8.8.8.8", 32)
                 .addRoute("8.8.4.4", 32)
                 .addRoute("1.1.1.1", 32)
                 .addRoute("1.0.0.1", 32)
+                .addRoute("1.1.1.3", 32)
+                .addRoute("1.0.0.3", 32)
                 .addRoute("9.9.9.9", 32)
+                .addRoute("149.112.112.112", 32)
                 .addRoute("208.67.222.222", 32)
+                .addRoute("208.67.220.220", 32)
+                .addRoute("94.140.14.14", 32)
+                .addRoute("94.140.15.15", 32)
                 .addRoute("10.0.0.0", 8)
                 .setMtu(1500)
                 .setBlocking(true)
@@ -218,13 +232,27 @@ class SelfControlVpnService : VpnService() {
             return
         }
 
+        val ihl = (buffer[0].toInt() and 0x0F) * 4
+        if (length < ihl + 8) return
+
         val protocol = buffer[9].toInt() and 0xFF
-        if (protocol != 17) { // UDP = 17
+
+        // Handle TCP (Protocol 6)
+        if (protocol == 6) {
+            if (length < ihl + 20) return
+            val destPort = ((buffer[ihl + 2].toInt() and 0xFF) shl 8) or (buffer[ihl + 3].toInt() and 0xFF)
+            // Immediately reject DoT (port 853) or TCP DNS (port 53) with TCP RST
+            // This immediately informs Android's Private DNS and network stack that DoT is not supported,
+            // triggering instantaneous fallback to CleanBrowsing UDP port 53 without timeout or leak!
+            if (destPort == 853 || destPort == 53) {
+                sendTcpRst(buffer, ihl, outputStream)
+            }
             return
         }
 
-        val ihl = (buffer[0].toInt() and 0x0F) * 4
-        if (length < ihl + 8) return
+        if (protocol != 17) { // UDP = 17
+            return
+        }
 
         val udpLen = ((buffer[ihl + 4].toInt() and 0xFF) shl 8) or (buffer[ihl + 5].toInt() and 0xFF)
         if (udpLen < 8 || length < ihl + udpLen) return
@@ -238,6 +266,15 @@ class SelfControlVpnService : VpnService() {
         val dnsOffset = ihl + 8
         val dnsLength = (udpLen - 8).coerceAtMost(length - dnsOffset)
         val domain = extractDomainFromDns(buffer, dnsOffset, dnsOffset + dnsLength) ?: return
+
+        // Intercept DoH bootstrap domains to prevent browser DoH bypass
+        val isDohBootstrap = DOH_BOOTSTRAP_DOMAINS.any {
+            domain.equals(it, ignoreCase = true) || domain.endsWith(".$it", ignoreCase = true)
+        }
+        if (isDohBootstrap) {
+            sendDnsBlockResponse(buffer, ihl, dnsOffset, ihl + udpLen, outputStream)
+            return
+        }
 
         val repo = SelfControlApp.repository
         val prefs = repo.preferences
@@ -282,12 +319,16 @@ class SelfControlVpnService : VpnService() {
                 category = evalCategory
             )
 
-            // Trigger UI intervention from VPN if AccessibilityService is not running
-            if (!com.example.service.accessibility.SelfControlAccessibilityService.isRunning &&
-                !InterventionActivity.isShowing &&
-                !InterventionActivity.isInDismissCooldown()
-            ) {
-                InterventionActivity.start(this, domain, evalCategory.displayName)
+            // CRITICAL: Do NOT show block screen for adult website block!
+            // Adult websites must be completely unreachable via DNS (NXDOMAIN) without block screen.
+            // Only trigger UI intervention if it's NOT an adult block (e.g. custom rule where user requested intervention)
+            if (evalCategory != BlockCategory.ADULT) {
+                if (!com.example.service.accessibility.SelfControlAccessibilityService.isRunning &&
+                    !InterventionActivity.isShowing &&
+                    !InterventionActivity.isInDismissCooldown()
+                ) {
+                    InterventionActivity.start(this, domain, evalCategory.displayName)
+                }
             }
 
             // Send back NXDOMAIN DNS response (RCODE = 3)
@@ -316,30 +357,43 @@ class SelfControlVpnService : VpnService() {
 
                 socket = DatagramSocket().apply {
                     protect(this) // Crucial: bypasses the VPN tunnel to the physical network
-                    soTimeout = 1200
+                    soTimeout = 1500
                 }
 
-                // Query CleanBrowsing Adult Filter DNS (Primary/Secondary), with Cloudflare Family as fallback
+                // Query CleanBrowsing Adult Filter DNS (Primary/Secondary)
                 var received = false
+                var actualRespLength = 0
                 for (upstream in upstreamDnsAddresses) {
                     try {
                         val outPacket = DatagramPacket(dnsPacket, dnsPacket.size, upstream, 53)
                         socket.send(outPacket)
                         socket.receive(inPacket)
                         received = true
+                        actualRespLength = inPacket.length
                         break
                     } catch (_: Throwable) {
                         // Try next upstream server
                     }
                 }
 
-                if (!received) return@launch
+                // Fallback to CleanBrowsing DoH if UDP fails or times out
+                if (!received) {
+                    val dohBytes = queryCleanBrowsingDoh(dnsPacket)
+                    if (dohBytes != null && dohBytes.size >= 12) {
+                        System.arraycopy(dohBytes, 0, responseBuffer, 0, dohBytes.size)
+                        actualRespLength = dohBytes.size
+                        received = true
+                    }
+                }
 
-                val responseLength = inPacket.length
-                if (responseLength < 12) return@launch
+                if (!received || actualRespLength < 12) return@launch
 
-                // Layer 1 Inspection: Check if CleanBrowsing Adult Filter or Cloudflare Family DNS blocked this domain
-                val isDnsBlocked = isAdultBlocked && AdultBlockingEngine.isDnsBlockedResponse(responseBuffer, responseLength, domain)
+                // Dynamic CleanBrowsing Adult Filter Check:
+                // CleanBrowsing blocks adult domains dynamically by returning RCODE = 3 (NXDOMAIN) or 0.0.0.0
+                val flags = ((responseBuffer[2].toInt() and 0xFF) shl 8) or (responseBuffer[3].toInt() and 0xFF)
+                val rcode = flags and 0x0F
+                val isDnsBlocked = isAdultBlocked && (rcode == 3 || AdultBlockingEngine.isDnsBlockedResponse(responseBuffer, actualRespLength, domain))
+
                 if (isDnsBlocked) {
                     AdultBlockingEngine.rememberAdultDomain(domain, "cleanbrowsing_adult_dns")
                     totalBlockedRequests++
@@ -349,12 +403,9 @@ class SelfControlVpnService : VpnService() {
                         ruleType = com.example.data.model.RuleType.DOMAIN,
                         category = BlockCategory.ADULT
                     )
-                    if (!com.example.service.accessibility.SelfControlAccessibilityService.isRunning &&
-                        !InterventionActivity.isShowing &&
-                        !InterventionActivity.isInDismissCooldown()
-                    ) {
-                        InterventionActivity.start(this@SelfControlVpnService, domain, BlockCategory.ADULT.displayName)
-                    }
+                    // CRITICAL: DO NOT SHOW BLOCK SCREEN (InterventionActivity)!
+                    // Adult websites are completely unreachable via DNS blocking, exactly like adding CleanBrowsing DNS in Android DNS settings.
+                    // Send back pristine NXDOMAIN response to TUN
                     synchronized(outputStream) {
                         sendDnsBlockResponse(buffer, ihl, dnsOffset, ihl + 8 + dnsLength, outputStream)
                     }
@@ -362,7 +413,7 @@ class SelfControlVpnService : VpnService() {
                 }
 
                 // Forward valid DNS response from CleanBrowsing back to TUN interface
-                val fullResponse = ByteArray(ihl + 8 + responseLength)
+                val fullResponse = ByteArray(ihl + 8 + actualRespLength)
 
                 // Copy IPv4 header
                 System.arraycopy(buffer, 0, fullResponse, 0, ihl)
@@ -373,7 +424,7 @@ class SelfControlVpnService : VpnService() {
                     fullResponse[16 + i] = temp
                 }
                 // Update total length in IPv4 header
-                val totalLen = ihl + 8 + responseLength
+                val totalLen = ihl + 8 + actualRespLength
                 fullResponse[2] = ((totalLen shr 8) and 0xFF).toByte()
                 fullResponse[3] = (totalLen and 0xFF).toByte()
 
@@ -384,14 +435,14 @@ class SelfControlVpnService : VpnService() {
                 fullResponse[ihl + 1] = buffer[ihl + 3]
                 fullResponse[ihl + 2] = srcPort0        // Src port becomes dest
                 fullResponse[ihl + 3] = srcPort1
-                val udpLen = 8 + responseLength
+                val udpLen = 8 + actualRespLength
                 fullResponse[ihl + 4] = ((udpLen shr 8) and 0xFF).toByte()
                 fullResponse[ihl + 5] = (udpLen and 0xFF).toByte()
                 fullResponse[ihl + 6] = 0 // Checksum optional in UDP/IPv4
                 fullResponse[ihl + 7] = 0
 
                 // Copy DNS payload
-                System.arraycopy(responseBuffer, 0, fullResponse, ihl + 8, responseLength)
+                System.arraycopy(responseBuffer, 0, fullResponse, ihl + 8, actualRespLength)
 
                 // Recalculate IPv4 header checksum so Linux kernel network stack accepts the packet
                 updateIpv4Checksum(fullResponse, ihl)
@@ -406,6 +457,31 @@ class SelfControlVpnService : VpnService() {
                     socket?.close()
                 } catch (_: Throwable) {}
             }
+        }
+    }
+
+    private fun queryCleanBrowsingDoh(queryWire: ByteArray): ByteArray? {
+        var conn: java.net.HttpURLConnection? = null
+        return try {
+            val url = java.net.URL(AdultBlockingEngine.CLEANBROWSING_ADULT_DOH_URL)
+            conn = (url.openConnection() as java.net.HttpURLConnection).apply {
+                requestMethod = "POST"
+                doOutput = true
+                setRequestProperty("Content-Type", "application/dns-message")
+                setRequestProperty("Accept", "application/dns-message")
+                connectTimeout = 1200
+                readTimeout = 1200
+            }
+            conn.outputStream.use { it.write(queryWire) }
+            if (conn.responseCode == 200) {
+                conn.inputStream.use { it.readBytes() }
+            } else null
+        } catch (_: Throwable) {
+            null
+        } finally {
+            try {
+                conn?.disconnect()
+            } catch (_: Throwable) {}
         }
     }
 
@@ -459,9 +535,21 @@ class SelfControlVpnService : VpnService() {
             response[ihl + 2] = srcPort0
             response[ihl + 3] = srcPort1
 
-            // Set DNS Response flag and NXDOMAIN (RCODE = 3)
+            // Set DNS Response flags: QR = 1, RD = 1, RA = 1, RCODE = 3 (NXDOMAIN)
             response[dnsOffset + 2] = 0x81.toByte() // QR = 1, RD = 1
             response[dnsOffset + 3] = 0x83.toByte() // RA = 1, RCODE = 3 (NXDOMAIN)
+
+            // Clear ANCOUNT, NSCOUNT, ARCOUNT so client does not expect answer records
+            response[dnsOffset + 6] = 0
+            response[dnsOffset + 7] = 0
+            response[dnsOffset + 8] = 0
+            response[dnsOffset + 9] = 0
+            response[dnsOffset + 10] = 0
+            response[dnsOffset + 11] = 0
+
+            // UDP checksum set to 0 (optional for IPv4)
+            response[ihl + 6] = 0
+            response[ihl + 7] = 0
 
             // Recalculate IPv4 header checksum
             updateIpv4Checksum(response, ihl)
@@ -472,6 +560,112 @@ class SelfControlVpnService : VpnService() {
         } catch (_: Exception) {
             // Ignore socket write errors
         }
+    }
+
+    private fun sendTcpRst(
+        buffer: ByteArray,
+        ihl: Int,
+        outputStream: FileOutputStream
+    ) {
+        try {
+            val rstPacket = ByteArray(ihl + 20)
+            System.arraycopy(buffer, 0, rstPacket, 0, ihl)
+
+            val totalLen = ihl + 20
+            rstPacket[2] = ((totalLen shr 8) and 0xFF).toByte()
+            rstPacket[3] = (totalLen and 0xFF).toByte()
+
+            // Swap IP addresses
+            for (i in 0 until 4) {
+                val temp = rstPacket[12 + i]
+                rstPacket[12 + i] = rstPacket[16 + i]
+                rstPacket[16 + i] = temp
+            }
+
+            // Swap TCP ports
+            rstPacket[ihl] = buffer[ihl + 2]
+            rstPacket[ihl + 1] = buffer[ihl + 3]
+            rstPacket[ihl + 2] = buffer[ihl]
+            rstPacket[ihl + 3] = buffer[ihl + 1]
+
+            val inSeq = ((buffer[ihl + 4].toLong() and 0xFF) shl 24) or
+                    ((buffer[ihl + 5].toLong() and 0xFF) shl 16) or
+                    ((buffer[ihl + 6].toLong() and 0xFF) shl 8) or
+                    (buffer[ihl + 7].toLong() and 0xFF)
+
+            val inAck = ((buffer[ihl + 8].toLong() and 0xFF) shl 24) or
+                    ((buffer[ihl + 9].toLong() and 0xFF) shl 16) or
+                    ((buffer[ihl + 10].toLong() and 0xFF) shl 8) or
+                    (buffer[ihl + 11].toLong() and 0xFF)
+
+            val inFlags = buffer[ihl + 13].toInt() and 0xFF
+            val hasAck = (inFlags and 0x10) != 0
+
+            if (hasAck) {
+                rstPacket[ihl + 4] = ((inAck shr 24) and 0xFF).toByte()
+                rstPacket[ihl + 5] = ((inAck shr 16) and 0xFF).toByte()
+                rstPacket[ihl + 6] = ((inAck shr 8) and 0xFF).toByte()
+                rstPacket[ihl + 7] = (inAck and 0xFF).toByte()
+                rstPacket[ihl + 8] = 0
+                rstPacket[ihl + 9] = 0
+                rstPacket[ihl + 10] = 0
+                rstPacket[ihl + 11] = 0
+                rstPacket[ihl + 13] = 0x04 // RST
+            } else {
+                rstPacket[ihl + 4] = 0
+                rstPacket[ihl + 5] = 0
+                rstPacket[ihl + 6] = 0
+                rstPacket[ihl + 7] = 0
+                val ackOut = (inSeq + 1) and 0xFFFFFFFFL
+                rstPacket[ihl + 8] = ((ackOut shr 24) and 0xFF).toByte()
+                rstPacket[ihl + 9] = ((ackOut shr 16) and 0xFF).toByte()
+                rstPacket[ihl + 10] = ((ackOut shr 8) and 0xFF).toByte()
+                rstPacket[ihl + 11] = (ackOut and 0xFF).toByte()
+                rstPacket[ihl + 13] = 0x14 // RST + ACK
+            }
+
+            rstPacket[ihl + 12] = 0x50.toByte() // Data offset: 5 (20 bytes)
+            rstPacket[ihl + 14] = 0
+            rstPacket[ihl + 15] = 0
+            rstPacket[ihl + 16] = 0 // Checksum
+            rstPacket[ihl + 17] = 0
+            rstPacket[ihl + 18] = 0 // Urgent
+            rstPacket[ihl + 19] = 0
+
+            updateTcpChecksum(rstPacket, ihl)
+            updateIpv4Checksum(rstPacket, ihl)
+
+            synchronized(outputStream) {
+                outputStream.write(rstPacket, 0, rstPacket.size)
+            }
+        } catch (_: Throwable) {}
+    }
+
+    private fun updateTcpChecksum(packet: ByteArray, ihl: Int) {
+        try {
+            var sum = 0
+            // Pseudo header: Src IP (4) + Dst IP (4) + 0 (1) + Protocol 6 (1) + TCP Length 20 (2)
+            sum += ((packet[12].toInt() and 0xFF) shl 8) or (packet[13].toInt() and 0xFF)
+            sum += ((packet[14].toInt() and 0xFF) shl 8) or (packet[15].toInt() and 0xFF)
+            sum += ((packet[16].toInt() and 0xFF) shl 8) or (packet[17].toInt() and 0xFF)
+            sum += ((packet[18].toInt() and 0xFF) shl 8) or (packet[19].toInt() and 0xFF)
+            sum += 6 // Protocol TCP
+            sum += 20 // TCP Length
+
+            // TCP header
+            for (i in ihl until ihl + 20 step 2) {
+                if (i != ihl + 16) { // Skip existing checksum bytes
+                    sum += ((packet[i].toInt() and 0xFF) shl 8) or (packet[i + 1].toInt() and 0xFF)
+                }
+            }
+
+            while ((sum shr 16) > 0) {
+                sum = (sum and 0xFFFF) + (sum shr 16)
+            }
+            val checksum = sum.inv() and 0xFFFF
+            packet[ihl + 16] = ((checksum shr 8) and 0xFF).toByte()
+            packet[ihl + 17] = (checksum and 0xFF).toByte()
+        } catch (_: Throwable) {}
     }
 
     /**
@@ -515,10 +709,10 @@ class SelfControlVpnService : VpnService() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val channel = NotificationChannel(
                 NOTIFICATION_CHANNEL_ID,
-                "VPN Protection Service",
+                "Reclaim CleanBrowsing DNS",
                 NotificationManager.IMPORTANCE_LOW
             ).apply {
-                description = "Shows ongoing protection status"
+                description = "Filters adult websites using CleanBrowsing DNS"
             }
             val manager = getSystemService(NotificationManager::class.java)
             manager.createNotificationChannel(channel)

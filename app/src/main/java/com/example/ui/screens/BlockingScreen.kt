@@ -1,5 +1,8 @@
 package com.example.ui.screens
-
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import android.app.Activity
+import com.example.service.vpn.SelfControlVpnService
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -19,20 +22,26 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ChevronRight
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.material.icons.filled.List
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Movie
+import androidx.compose.material.icons.filled.Shield
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Icon
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.text.AnnotatedString
+import android.widget.Toast
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -105,8 +114,15 @@ fun BlockingScreen(
     var pendingAdminDays by remember { mutableIntStateOf(1) }
     var waitingForAdminGrant by remember { mutableStateOf(false) }
 
-
-
+    val vpnLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        if (result.resultCode == Activity.RESULT_OK) {
+            SelfControlVpnService.startVpn(context)
+            viewModel.setAdultContentBlocked(true)
+            Toast.makeText(context, "CleanBrowsing DNS activated via Reclaim!", Toast.LENGTH_SHORT).show()
+        }
+    }
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
             if (event == Lifecycle.Event.ON_RESUME) {
@@ -293,7 +309,7 @@ fun BlockingScreen(
             ) {
                 AdvancedToggleItem(
                     title = "Block Adult Content",
-                    description = "3-Layer Filter: CleanBrowsing Adult DNS Filter, 500,000+ adult domain DB & browser keyword scanning",
+                    description = "CleanBrowsing Adult Filter DNS (adult-filter-dns.cleanbrowsing.org) blocks adult websites dynamically at the network level (no block screen).",
                     checked = adultBlocked,
                     hasPendingEmailCode = activePartnerRequests.containsKey("FILTER_ADULT_CONTENT"),
                     onOpenPendingCode = {
@@ -301,8 +317,118 @@ fun BlockingScreen(
                             LockedActionTarget("FILTER_ADULT_CONTENT", "Turn Off 'Block Adult Content'")
                         )
                     },
-                    onCheckedChange = { viewModel.setAdultContentBlocked(it) }
+                    onCheckedChange = { willBlock ->
+                        if (willBlock) {
+                            PermissionHelper.activateCleanBrowsingDnsViaReclaim(
+                                context = context,
+                                onRequireSystemConsent = { vpnLauncher.launch(it) },
+                                onActivated = {
+                                    viewModel.setAdultContentBlocked(true)
+                                    Toast.makeText(context, "CleanBrowsing DNS activated via Reclaim!", Toast.LENGTH_SHORT).show()
+                                }
+                            )
+                        } else {
+                            SelfControlVpnService.stopVpn(context)
+                            viewModel.setAdultContentBlocked(false)
+                        }
+                    }
                 )
+
+                // In-App CleanBrowsing DNS Card (Directly managed by Reclaim - zero manual setup)
+                Card(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("cleanbrowsing_in_app_dns_card"),
+                    shape = RoundedCornerShape(16.dp),
+                    colors = CardDefaults.cardColors(containerColor = if (adultBlocked) Color(0xFFF0FDF4) else Color(0xFFF8FAFC)),
+                    border = BorderStroke(1.dp, if (adultBlocked) Color(0xFFBBF7D0) else Color(0xFFE2E8F0))
+                ) {
+                    Column(
+                        modifier = Modifier.padding(14.dp)
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Icon(
+                                    imageVector = Icons.Default.Shield,
+                                    contentDescription = null,
+                                    tint = if (adultBlocked) PrimaryGreen else Color(0xFF64748B),
+                                    modifier = Modifier.size(18.dp)
+                                )
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text(
+                                    text = "CleanBrowsing DNS",
+                                    fontSize = 13.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = if (adultBlocked) Color(0xFF166534) else DarkText
+                                )
+                            }
+                            // Status pill
+                            Box(
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(12.dp))
+                                    .background(if (adultBlocked) Color(0xFFDCFCE7) else Color(0xFFE2E8F0))
+                                    .padding(horizontal = 8.dp, vertical = 2.dp)
+                            ) {
+                                Text(
+                                    text = if (adultBlocked) "Active in Reclaim" else "Inactive",
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = if (adultBlocked) Color(0xFF15803D) else Color(0xFF64748B)
+                                )
+                            }
+                        }
+                        Spacer(modifier = Modifier.height(6.dp))
+                        Text(
+                            text = if (adultBlocked) {
+                                "Adult domains resolve to NXDOMAIN via CleanBrowsing DNS (185.228.168.10 / adult-filter-dns.cleanbrowsing.org) with strict SafeSearch enforced. Directly managed by Reclaim."
+                            } else {
+                                "CleanBrowsing Adult Filter DNS dynamically blocks adult websites and enforces SafeSearch directly through the Reclaim app without any manual network setup."
+                            },
+                            fontSize = 11.sp,
+                            color = if (adultBlocked) Color(0xFF15803D) else Color(0xFF64748B),
+                            lineHeight = 15.sp
+                        )
+                        if (!adultBlocked) {
+                            Spacer(modifier = Modifier.height(10.dp))
+                            Button(
+                                onClick = {
+                                    PermissionHelper.activateCleanBrowsingDnsViaReclaim(
+                                        context = context,
+                                        onRequireSystemConsent = { vpnLauncher.launch(it) },
+                                        onActivated = {
+                                            viewModel.setAdultContentBlocked(true)
+                                            Toast.makeText(context, "CleanBrowsing DNS added and activated via Reclaim!", Toast.LENGTH_SHORT).show()
+                                        }
+                                    )
+                                },
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(38.dp)
+                                    .testTag("activate_dns_in_app_button"),
+                                shape = RoundedCornerShape(8.dp),
+                                colors = ButtonDefaults.buttonColors(containerColor = PrimaryGreen)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Shield,
+                                    contentDescription = null,
+                                    tint = Color.White,
+                                    modifier = Modifier.size(16.dp)
+                                )
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text(
+                                    text = "Add CleanBrowsing DNS via Reclaim",
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = Color.White
+                                )
+                            }
+                        }
+                    }
+                }
 
                 AdvancedToggleItem(
                     title = "Block Image & Video Search",

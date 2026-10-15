@@ -290,10 +290,8 @@ class SelfControlAccessibilityService : AccessibilityService() {
                 val prefs = SelfControlApp.repository.preferences
                 prefs.startDataStoreCollectionIfUnlocked()
                 prefs.ensureNewAppsBaselineInitialized()
-                if (prefs.cachedMasterProtection && prefs.cachedVpnEnabled && !com.example.service.vpn.SelfControlVpnService.isRunning) {
-                    if (android.net.VpnService.prepare(this@SelfControlAccessibilityService) == null) {
-                        com.example.service.vpn.SelfControlVpnService.startVpn(this@SelfControlAccessibilityService)
-                    }
+                if (prefs.cachedMasterProtection && prefs.cachedAdultContentBlocked) {
+                    com.example.util.PermissionHelper.tryApplyCleanBrowsingPrivateDns(this@SelfControlAccessibilityService)
                 }
             } catch (_: Throwable) {}
         }
@@ -325,10 +323,8 @@ class SelfControlAccessibilityService : AccessibilityService() {
                 try {
                     val prefs = SelfControlApp.repository.preferences
                     prefs.checkAndExpireUninstallProtection()
-                    if (prefs.cachedMasterProtection && prefs.cachedVpnEnabled && !com.example.service.vpn.SelfControlVpnService.isRunning) {
-                        if (android.net.VpnService.prepare(this@SelfControlAccessibilityService) == null) {
-                            com.example.service.vpn.SelfControlVpnService.startVpn(this@SelfControlAccessibilityService)
-                        }
+                    if (prefs.cachedMasterProtection && prefs.cachedAdultContentBlocked) {
+                        com.example.util.PermissionHelper.tryApplyCleanBrowsingPrivateDns(this@SelfControlAccessibilityService)
                     }
                 } catch (_: Throwable) {}
                 delay(300_000L) // 5 minutes
@@ -1798,18 +1794,12 @@ class SelfControlAccessibilityService : AccessibilityService() {
                 )
                 return
             } else if (isAdultBlocked) {
+                // Adult websites are blocked at the DNS layer via CleanBrowsing DNS (making them completely unreachable).
+                // Do not rely on or trigger block screen (InterventionActivity) for adult website visits.
                 val cleanDomain = RuleEngine.normalizeDomain(url)
                 if (cleanDomain.contains('.') && !RuleEngine.isKnownSearchEngine(cleanDomain)) {
                     serviceScope.launch {
-                        if (com.example.domain.engine.AdultBlockingEngine.isAdultDomainMultiLayer(cleanDomain)) {
-                            triggerIntervention(
-                                target = url,
-                                ruleType = RuleType.DOMAIN,
-                                category = BlockCategory.ADULT,
-                                reason = "Adult website blocked (CleanBrowsing DNS Filter)",
-                                appPackage = packageName
-                            )
-                        }
+                        com.example.domain.engine.AdultBlockingEngine.isAdultDomainMultiLayer(cleanDomain)
                     }
                 }
             }
@@ -2715,19 +2705,12 @@ class SelfControlAccessibilityService : AccessibilityService() {
                 )
                 return
             } else if (isAdultBlocked) {
-                // Layer 1 DNS Check against CleanBrowsing Adult Filter DNS (adult-filter-dns.cleanbrowsing.org)
+                // Adult websites are blocked at the DNS layer via CleanBrowsing DNS (making them completely unreachable).
+                // Do not rely on or trigger block screen (InterventionActivity) for adult website visits.
                 val cleanDomain = RuleEngine.normalizeDomain(urlText)
                 if (cleanDomain.contains('.') && !RuleEngine.isKnownSearchEngine(cleanDomain)) {
                     serviceScope.launch {
-                        if (com.example.domain.engine.AdultBlockingEngine.isAdultDomainMultiLayer(cleanDomain)) {
-                            triggerIntervention(
-                                target = urlText,
-                                ruleType = RuleType.DOMAIN,
-                                category = BlockCategory.ADULT,
-                                reason = "Adult website blocked (CleanBrowsing DNS Filter)",
-                                appPackage = packageName
-                            )
-                        }
+                        com.example.domain.engine.AdultBlockingEngine.isAdultDomainMultiLayer(cleanDomain)
                     }
                 }
             }

@@ -188,6 +188,12 @@ class MainActivity : ComponentActivity() {
                             notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
                         }
                     }
+
+                    // Attempt automatic CleanBrowsing Private DNS configuration if permissions exist
+                    val prefs = SelfControlApp.repository.preferences
+                    if (prefs.cachedAdultContentBlocked) {
+                        PermissionHelper.tryApplyCleanBrowsingPrivateDns(this@MainActivity)
+                    }
                 }
 
                 val navBackStackEntry by navController.currentBackStackEntryAsState()
